@@ -53,13 +53,14 @@ Across Heterogeneous Generative Models}
 \def\openreview{\url{https://openreview.net/forum?id=to-be-assigned}}
 
 \begin{document}
+\raggedbottom
 
 \maketitle
 
 \begin{abstract}
 Reinforcement-learning post-training systems share an outer loop---generate, score, assign credit, and update---yet their implementations fragment because autoregressive tokens, diffusion trajectories, multimodal values, and multi-stage rollouts carry different state and impose different execution constraints.
 We present \system, a trajectory-centric system that places a lineage-preserving, modality-aware intermediate representation at the boundary between post-training semantics and distributed execution.
-A trajectory is an ordered tree of typed parts carrying user-visible values, model-facing conditions, optimization-facing segments, rewards, and the policy version that produced each generated frontier.
+A trajectory batch is a sequence of typed frontiers encoding prompt-rooted trees, with decoded values, model conditions, replay segments, rewards, and behavior-policy versions.
 Rollout engines implement one transformation, $\sample\!\rightarrow\!\sample$, while logical roles, placement, tensor transport, weight publication, and phase residency determine how the transformation executes.
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
 This manuscript derives the design from UniRL commit \texttt{f5d7104} and specifies a claim-aligned evaluation covering training reproducibility, end-to-end throughput, phase cost, scaling, memory, transport, and policy lag.
@@ -79,9 +80,7 @@ An autoregressive update may need packed token IDs, masks, rollout log probabili
 Existing systems have made major progress on scalable LLM post-training and flexible device mapping~\citep{sheng2024hybridflow,hu2024openrlhf,wang2025roll,nemorl2025}.
 Fully or partially asynchronous systems address rollout tail latency and accelerator idle time~\citep{fu2025areal,zhang2026relax,slime2025}.
 Meanwhile, diffusion RL methods and multimodal frameworks broaden the optimization and model families that can be trained~\citep{black2023ddpo,liu2025flowgrpo,xue2025dancegrpo,zheng2025diffusionnft,verlomni2026}.
-These advances also raise the bar for a new system paper: supporting more modalities or adding an asynchronous loop is not, by itself, a sufficient technical thesis.
-
-\system starts from a narrower question that distinguishes its thesis from a feature catalogue:
+The remaining design question is how the information shared by these workflows should survive changes in their model-specific state and execution paths.
 
 \begin{quote}
 \emph{Can one post-training program cross generative model families and execution topologies while retaining the structure needed for correct grouping, replay, credit assignment, transport, and policy-version control?}
@@ -94,19 +93,20 @@ Distributed methods declare how each structured field scatters, concatenates, pa
 Dense tensors can be replaced by row-addressable references without changing the trajectory structure.
 This representation is passed through a small set of logical roles and can be mapped to colocated or disjoint GPU slabs.
 
-The paper makes three source-backed design contributions and assigns each a distinct empirical burden:
+The paper develops two coupled design ideas:
 
 \begin{itemize}
-  \item A \emph{lineage-preserving trajectory IR} for branching AR, diffusion, composed, and environment-interacting rollouts (Section~\ref{sec:trajectory}).  E0 and E4 must show that real traces preserve ancestry, grouping, replay state, and credit; E1 and E2 then show that the same boundary supports credible learning in two model families.
-  \item A \emph{factorization of semantic roles from physical execution}: rollout remains $\sample\!\rightarrow\!\sample$, while placement, field-aware dispatch, tensor transport, weight publication, and residency vary only where their contracts permit (Section~\ref{sec:execution}).  E3 measures full-stack efficiency against an aligned external system, whereas E5 measures UniRL's own representation and topology costs.
-  \item A \emph{version-aware bounded-staleness discipline}.  It fills rollout lanes dynamically, but publishes weights only at a quiescent, batch-aligned boundary and filters samples by explicit policy lag (Section~\ref{sec:async}).  E6 separates the cost of disaggregation from the incremental effect of overlap, then measures the lag--quality--time trade-off.
+  \item A \emph{lineage-preserving trajectory IR} that separates decoded values, model conditions, and replay segments while retaining ancestry across generative stages (Section~\ref{sec:trajectory}). Real traces and an equivalent flat-row reconstruction test its semantic contract; AR and diffusion runs test training validity.
+  \item A \emph{factorization of semantic roles from physical execution}: rollout remains $\sample\!\rightarrow\!\sample$, while field-aware dispatch, tensor references, placement, weight publication, and residency specify its execution (Section~\ref{sec:execution}). A work-matched external comparison and internal representation/topology controls measure the resulting cost.
 \end{itemize}
 
-This creates a claim ladder rather than one omnibus benchmark: trace invariants establish semantic correctness; AR and diffusion runs establish training validity; cross-stage grouping tests the value of retained lineage; and matched systems studies quantify the cost and operating region of the execution choices.
+Version-aware bounded staleness is one realization of the execution contracts (Section~\ref{sec:async}); a separate controlled sweep tests its operating region.
+The evidence therefore proceeds from structural correctness, through credible learning and a composed workflow, to measured system cost.
+The experiment IDs and corresponding artifacts are specified in Section~\ref{sec:evaluation}.
 
 The current manuscript intentionally contains no end-to-end training or systems-performance claim: the audited repository contains runnable instrumentation and comparison scripts but not the raw logs needed to verify prose-reported numbers.
 We report only a narrowly scoped, artifact-backed CPU regression of IR operations in RQ3.
-This evidence boundary prevents an implementation survey from masquerading as an evaluated systems result.
+The GPU studies are prespecified below and remain necessary before a quantitative systems conclusion.
 
 \section{Problem: Preserve Semantics While Changing Execution}
 \label{sec:problem}
@@ -126,6 +126,11 @@ The sufficient statistics for an update depend on the generative process.
 For AR policies, a segment may be a variable-length packed token sequence with masks, old log probabilities, values, and returns.
 For stochastic diffusion or flow policies, a segment may contain selected latent snapshots, a shared noise schedule, the indices of sampled transitions, and rollout or replay transition statistics.
 Multi-stage and agentic paths add nonuniform lineage and observations.
+
+For example, let prompt $p$ produce rewrites $w_{p,j}$ and images $x_{p,j,k}$.
+The image model conditions on $w_{p,j}$, but credit may compare either images under that rewrite or all images under $p$.
+A flattened image batch can implement both choices only if it retains or reconstructs the relevant parent keys.
+This example motivates explicit ancestry, while the image model's replay state motivates typed segments; neither requirement follows from the other.
 
 \paragraph{Role heterogeneity.}
 Generation, reward evaluation, model replay, gradient computation, and policy publication have different dependencies and may use distinct runtime systems.
@@ -148,7 +153,7 @@ These observations produce four requirements.
 Requirement & Mechanism & Evidence required \\
 \midrule
 Preserve structure & Parent-addressed parts; root-complete split, select, concat, and reward propagation & Trace invariants across AR, diffusion, and cross-stage runs \\
-Preserve model state & Typed primitives, conditions, and AR/latent replay segments & Rollout--replay consistency and held-out integration \\
+Preserve model state & Typed primitives, conditions, and AR/latent replay segments & Rollout--replay consistency on exercised model paths \\
 Change execution safely & Logical roles, placement scopes, field-aware dispatch, and tensor references & Matched-work topology and transport ablations \\
 Control policy age & Version-stamped generated parts, lag filters, quiescent publication, and hard boundaries & Lag distributions, throughput, and time-to-quality \\
 \bottomrule
@@ -164,7 +169,7 @@ Finally, source-code breadth is not evidence that all combinations are productio
 \section{A Trajectory-Centric Programming Model}
 \label{sec:trajectory}
 
-\subsection{A trajectory is an ordered tree of parts}
+\subsection{A trajectory batch is a sequence of tree frontiers}
 
 The central type is
 \begin{equation}
@@ -174,7 +179,8 @@ P_i = (I_i, X_i, C_i, Z_i, R_i, A_i, V_i, M_i),
 \label{eq:sample}
 \end{equation}
 where $I_i$ are sample identifiers, $X_i$ decoded modality values, $C_i$ model conditions, $Z_i$ optimization segments, $R_i$ rewards, $A_i$ advantages or returns, $V_i$ a behavior-policy version, and $M_i$ auxiliary metadata.
-In code, $\mathcal{T}$ is a \sample{} and each $P_i$ is a \parttype{}.
+In code, $\mathcal{T}$ is a \sample{} and each $P_i$ is a batched \parttype{}, rather than a single tree node.
+The sequence encodes a forest of root-prompt trees whose edges connect adjacent frontiers.
 
 Identifiers encode ancestry.
 Root IDs contain no lineage separator; a branch appends a child ordinal.
@@ -188,7 +194,14 @@ The \texttt{fork} operator appends $k$ generated children per frontier row; \tex
 
 Batch operations act on complete root groups.
 \texttt{Sample.split()} returns one tree-complete trajectory per root, and slicing or selection is implemented by selecting these groups rather than independent rows.
-Consequently, group-relative advantages and cross-stage credit do not depend on an incidental flat-row ordering after a distributed shuffle.
+Moving complete roots preserves the parent-contiguous order constructed by \texttt{fork}; independently permuting child rows need not preserve the credit computation.
+
+\paragraph{The contract has preconditions.}
+The constructor checks parent existence, not every property required by later operations.
+At the audited commit, group advantages require uniform, contiguous groups; reward propagation reshapes child rewards into parent-major blocks and does not join them by ID.
+Position-wise \texttt{Sample.concat} also assumes equal frontier depth, and generic shared-field concatenation retains the first value without checking equality.
+Callers must therefore establish compatible schemas, group order, and shared values before merging; the async batch assembler separately rejects mixed behavior versions.
+E0 checks these conditions at the actual experiment boundaries. The representation supports the contract, but its constructor alone is not a general proof of correctness for arbitrary trees or permutations.
 
 \begin{figure}[H]
 \centering
@@ -227,7 +240,7 @@ Consequently, group-relative advantages and cross-stage credit do not depend on 
 \draw[arr] (image) -- (credit);
 \draw[arr,dashed,bend left=32] (credit.south) to node[below,font=\scriptsize]{reward reduction} (rewrite.south);
 \end{tikzpicture}}
-\caption{Three trajectory shapes represented by the same ordered-part IR. A generated part retains decoded values and the optimization segment required to replay its policy. The policy version $v$ is attached to generated frontiers. This diagram is reconstructed from current types and execution paths, not from the repository's legacy figures.}
+\caption{Three trajectory shapes represented by the same ordered-part IR. A generated part retains decoded values and the optimization segment required to replay its policy. The policy version $v$ is attached to generated frontiers. The cross-stage path illustrates available ancestry; E4 freezes the rewrite model and trains only diffusion.}
 \label{fig:trajectory-ir}
 \end{figure}
 
@@ -416,9 +429,9 @@ Every generated part must carry an output policy version $v_o$.
 Let $v_t$ be the current optimizer-update version and $u$ the number of optimizer updates performed per consumed rollout batch.
 The manager exposes lag in update units,
 \begin{equation}
-\ell = v_t-v_o,
+\ell = v_t-v_o \leq u b,
 \end{equation}
-and filters completed work against a configured budget.
+where $b$ is the configured staleness allowance in rollout-batch units; the filter rejects work beyond that budget.
 Before publishing version $v_t$, it pauses admission, drains or suspends work, completes any started or batch-aligning prefix, checks that no publication splits a training batch across behavior versions, publishes weights, updates the rollout version, and then resubmits eligible pristine carry.
 Evaluation and checkpointing require a fully empty manager.
 
@@ -429,7 +442,7 @@ The evaluation must report the actual lag histogram, dropped work, and barrier t
 \section{Instantiations of the Common Contracts}
 \label{sec:instantiations}
 
-This section illustrates why the trajectory boundary is useful; it is not a support matrix.
+The following paths show which information crosses the common boundary and which computations remain specialized.
 
 \subsection{Autoregressive reasoning}
 
@@ -450,11 +463,12 @@ The common train stack handles microbatching and optimizer state; the algorithm 
 \subsection{Cross-stage and environment-interacting trajectories}
 
 In a prompt-enhancement path, one root produces one or more AR rewrites, and every rewrite produces one or more images.
-The image reward is attached to the leaf and reduced to the rewrite parent before updating the relevant stage.
+The image reward is attached to the leaf; when the rewrite stage trains, parent-major reduction supplies its feedback.
+The primary E4 case freezes that stage and uses ancestry to select the diffusion advantage groups.
 In a tool-interacting path, the policy emits an action-like text part, the environment appends an observation part, and the process repeats until termination or suspension.
 Both workflows need ancestry to survive rollout scheduling and sharding; flattening them into unrelated rows would require rebuilding that correspondence out of band.
 
-The decisive experiment is a real cross-stage trace and a controlled change in its lineage-defined grouping objective, not the number of in-tree adapters.
+E4 checks these groups against an explicit ID-based reference and then studies the two grouping objectives in training.
 
 \section{Evaluation Design and Prespecified Protocol}
 \label{sec:evaluation}
@@ -476,9 +490,9 @@ The operational commands, run-directory schema, and failure-routing rules are fr
 ID & Priority & Controlled study & Paper evidence \\
 \midrule
 E0 & P0 gate & Environment, semantic parity, replay/publication, checkpoint, and instrumentation checks & Evaluation validity and Appendix~\ref{app:correctness} \\
-E1 & P0 & Qwen3-4B-Base GRPO on DAPO-Math, three seeds & RQ1 AR validity and learning curves \\
-E2 & P0 & SD3.5-Medium FlowGRPO, three seeds and independent image evaluation & RQ1 diffusion validity and collapse guards \\
-E3 & P0 & Aligned UniRL--VeRL-Omni SD3.5 pair on one eight-GPU node & RQ2 throughput, resources, and phase cost \\
+E1 & P0 & Qwen3-4B-Base GRPO on DAPO-Math, three seeds & RQ1 AR validity; matched reference pending \\
+E2 & P0 & SD3.5-Medium FlowGRPO, three seeds per system and external image evaluation & RQ1 long-run reference and collapse guards \\
+E3 & P0 & Shape-matched native UniRL--VeRL-Omni SD3.5 recipes on eight GPUs & RQ2 throughput, resources, and phase cost \\
 E4 & P0 & Frozen-Qwen prompt enhancement with original-prompt versus rewrite-local grouping & RQ3 lineage and enablement result \\
 E5 & P0 minimum & IR/transport costs plus a matched UniRL topology pair & RQ3 abstraction and execution cost \\
 E6 & P1 & Matched synchronous/asynchronous Qwen3 sweep & RQ4 lag--quality--time trade-off \\
@@ -497,28 +511,43 @@ The GPU model, node count, GPUs per node, NVLink/PCIe/InfiniBand topology, CPU, 
 \label{sec:rq1}
 
 The first question is scientific rather than purely operational.
-A successful run must improve over its frozen base on independent endpoints without diagnostic collapse.
-An implementation reference is reported only where semantic parity is attainable; because UniRL does not claim a new optimizer, the absence of an aligned AR reference limits comparative conclusions but does not turn a valid learning run into an algorithm comparison.
+A successful run must improve over its frozen base on prespecified external endpoints without diagnostic collapse.
+This establishes learning validity. Reproducing another implementation additionally requires a full-budget reference with disclosed semantic differences; a 30-step speed run cannot supply that evidence.
+E2 therefore includes a long-run VeRL-Omni reference, while the adapted AR reference remains a separate prerequisite for an AR reproduction claim.
 
 \paragraph{AR workload.}
-E1 trains Qwen3-4B-Base with full-parameter textbook GRPO on DAPO-Math-17k.
+E1 trains Qwen3-4B-Base~\citep{yang2025qwen3} with full-parameter GRPO on DAPO-Math-17k~\citep{yu2025dapo}.
+The data name does not imply use of the DAPO optimizer; we fix the population-standard-deviation group estimator implemented in the audited recipe.
 Each rollout contains 64 prompts with eight samples (512 trajectories), uses SGLang TP=1 with thinking enabled, temperature/top-$p$ 1.0, top-$k$ disabled, and at most 8192 new tokens.
 The learner uses group-standard-deviation normalization, symmetric clipping at 0.2, \texttt{seq-mean-token-mean} aggregation, four updates per rollout, a 10,240-token microplanner, AdamW learning rate $10^{-6}$ and weight decay 0.01, and full-weight publication every rollout.
 We prespecify 800 rollouts on 32 total GPUs, internal AIME evaluation every ten rollouts, full checkpoints every 200 rollouts, and seed IDs 11, 22, and 33 applied to data order and the SGLang server RNG.
 Frozen base and checkpoints 200/400/600/800 are evaluated on MATH-500 (500 problems, avg@4) and AIME 2024/2025 (30 problems each, avg@16) using the registry's fixed decoding and \texttt{math\_verify} grader.
 The UniRL run and the selected current reference must align prompts, chat template, verifier, maximum generation length, group size, effective batch, clipping, KL treatment, optimizer updates, and evaluation decoding.
 The public veRL Qwen3 FSDP example is only a scaffold because its stock model variant, data, group size, response budget, and KL/objective settings differ; the AR reference row remains blank until a pinned adapted launcher passes a resolved-config parity audit.
-We report seed-level reward and external-evaluation curves, final and best-prespecified-checkpoint results, and 95\% confidence intervals.
+The final 800-rollout checkpoint is primary. Internal evaluation uses AIME 2024/2025, so an AIME-selected best checkpoint is reported only as validation-selected and cannot establish an untouched AIME test result.
+MATH-500 is the primary external AR endpoint, with a training/evaluation overlap audit required before interpretation; the fixed-budget AIME curves are secondary diagnostics.
+We report every seed, final-checkpoint curves, and 95\% confidence intervals; avg@$k$ denotes mean accuracy across $k$ sampled answers, not pass@$k$.
 
 \paragraph{Diffusion workload.}
-E2 fixes SD3.5-Medium and the same aligned FlowGRPO setting used by E3: 48 prompts with 16 images (768 samples) per rollout, $384\times384$ training resolution, ten denoising steps, three SDE steps in the first half, $\eta=0.8$, guidance 1, and distinct initial noise.
-PickScore supplies the training reward; LoRA rank/alpha is 32/64 on eight matched attention projections; the learner uses two updates, microbatch eight, learning rate and weight decay $10^{-4}$, clip $10^{-5}$, and publication every rollout.
+E2 fixes SD3.5-Medium~\citep{sd35medium2024} and the UniRL FlowGRPO setting used by E3: 48 prompts with 16 images (768 samples) per rollout, $384\times384$ training resolution, ten denoising steps, three SDE steps in the first half, $\eta=0.8$, guidance 1, and distinct initial noise.
+PickScore~\citep{kirstain2023pickapic} supplies the training reward; advantages subtract each prompt-group mean and divide by the batch-wide reward standard deviation.
+LoRA rank/alpha is 32/64 on eight matched attention projections; the learner uses two updates, microbatch eight, learning rate and weight decay $10^{-4}$, clip $10^{-5}$, and publication every rollout.
 We prespecify 300 rollouts on one eight-GPU node with seed IDs 11, 22, and 33.
-Frozen base and every 50-rollout checkpoint are evaluated with GenEval2 and PartiPrompts HPSv3/ImageReward views independent of the PickScore training reward.
-A preregistered diversity guard is also required so that reward improvement cannot alone establish success.
+The same budget and seed IDs apply to the pinned VeRL-Omni reference; checkpoint export and estimator parity are audited before admission.
+The stock pair differs in SDE strategy, step selection, and potentially normalization/anchor semantics, so it currently defines a related-recipe comparison. At least one full-budget E1 or E2 reference must pass mathematical and work parity before the paper claims reference-implementation reproduction; otherwise that claim remains unestablished.
+Frozen base and every 50-rollout checkpoint use a shared diffusers evaluation pipeline. The primary image endpoint is PartiPrompts HPSv3~\citep{ma2025hpsv3}; ImageReward~\citep{xu2023imagereward} and compositional scores provide complementary checks.
+These are held-fixed automatic judges distinct from the optimized PickScore model, not independent human studies.
 
-The diversity guard is within-prompt mean pairwise LPIPS (AlexNet features), computed over a fixed 16-image set per evaluation prompt with identical image seeds for the base and checkpoint.
-We report the prompt-level paired change and 95\% bootstrap interval; a greater than 10\% relative decrease from the base is preregistered as material diversity loss.
+\paragraph{Image evaluation identity.}
+The registry key \texttt{image/geneval2} points to UniRL's \texttt{synthetic/test.jsonl} and a local Qwen3-VL-8B Soft-TIFA-style scorer.
+We name this the \emph{synthetic compositional set}; it is not an official GenEval~2 result~\citep{kamath2025geneval2} without a separate data-and-scorer parity audit.
+Both image endpoints use $512\times512$, 40 steps, guidance 1, one image per prompt, and an evaluation seed of 42 shared across training seeds and checkpoints.
+The synthetic endpoint additionally fixes its explicit linear sigma grid, prompt-hashed seeds, and 256-token text-encoder limit; the preference endpoint fixes the pinned pipeline schedule and index-based seeds.
+Dataset sizes, revisions, overlap counts, and scorer hashes remain open manifest fields.
+
+The diversity guard is within-prompt mean pairwise LPIPS~\citep{zhang2018lpips} (AlexNet features), computed over 16 images per PartiPrompts prompt at the same evaluation setting, with identical image seeds for base and checkpoint.
+We average all 120 pair distances per prompt, then report the relative change in the mean across prompts and a paired prompt-bootstrap interval.
+A greater than 10\% relative decrease is a study-specific investigation trigger; it is not a literature-established quality threshold. A near-zero base makes this relative criterion undefined and requires the absolute change to be reported.
 This guard diagnoses collapse and is not itself a perceptual-quality metric.
 
 \begin{table}[H]
@@ -531,7 +560,7 @@ This guard diagnoses collapse and is not itself a perceptual-quality metric.
 ID & Workload / external endpoint & Base & Reference/control & UniRL & Seeds \\
 \midrule
 E1 & Qwen3-4B-Base GRPO; MATH-500/AIME & -- & -- & -- & 3 \\
-E2 & SD3.5-M FlowGRPO; GenEval2/preference/diversity & -- & -- & -- & 3 \\
+E2 & SD3.5-M FlowGRPO; preference/composition/diversity & -- & -- & -- & 3 \\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
@@ -541,20 +570,22 @@ E2 & SD3.5-M FlowGRPO; GenEval2/preference/diversity & -- & -- & -- & 3 \\
 \subsection{RQ2: What is end-to-end system performance?}
 \label{sec:rq2}
 
-E3 is the primary performance comparison: UniRL versus VeRL-Omni commit \texttt{01c87ee5} for the exact E2 SD3.5 work unit on one reserved eight-GPU node~\citep{verlomni2026}.
+E3 is the primary performance comparison: UniRL versus VeRL-Omni commit \texttt{01c87ee5} for the E2 SD3.5 shape-matched work unit on one reserved eight-GPU node~\citep{verlomni2026}.
 Both sides use 48 prompts, 16 samples, $384\times384$ output, ten denoising steps, three early-window SDE steps, two optimizer updates, microbatch eight, LoRA 32/64 on the same projections, learning rate/weight decay $10^{-4}$, clip $10^{-5}$, and PickScore.
 We run three process-level repetitions per configuration, 30 steps each, remove exactly the first five timing observations, and retain at least 20 observations per repetition.
-Systems run one at a time on the same hosts with matched cache and clock policy.
+Systems run one at a time on the same hosts with matched cache and clock policy; each repetition block randomizes their order.
 We report a backend-aligned SDPA-class row and separately each system's preregistered best valid backend.
-Engine/version, old-log-probability, and exact SDE-kernel differences are inherent and disclosed, not silently normalized away.
-Thus E3 is a work-aligned, implementation-faithful comparison of the two complete stacks; it does not isolate framework overhead from every backend/kernel difference.
+The stock UniRL recipe uses \texttt{FlowSDEStrategy} and three sampled early indices; the VeRL-Omni launcher requests \texttt{cps} and an early three-step window.
+These may change the transition distribution and likelihood, not merely kernel implementation. Normalization, anchors, actual replay work, and reward-service GPU placement also require an audit.
+Until a semantically aligned pair is established, E3 is labeled a \emph{shape-matched native-recipe comparison}; attention-backend matching alone does not make it an equivalent-algorithm framework comparison.
+Its speed ratio cannot be attributed solely to framework overhead.
 
 An E1 AR comparison is secondary and remains blocked until the adapted veRL launcher matches model, data, prompt/chat template, verifier, generation budget, effective batch, estimator, token packing, optimizer work, publication, and evaluation.
 If semantic parity cannot be achieved, the row is omitted rather than replaced by a nearby recipe.
 
 Metrics include median, mean, and p90 iteration time after a prespecified warmup; samples/s and samples/GPU-hour; per-phase time for generation, reward, credit, anchor/replay, backward/optimizer, weight publication, wake/sleep, and barriers; peak allocated and reserved GPU memory by role; CPU memory; and utilization.
 Strong and weak scaling use fixed global and fixed per-GPU work, respectively, after the primary single-node pair is complete.
-The 30-step E3 protocol does not support a time-to-quality claim; that quantity belongs to the full-budget E6 study unless an independently preregistered, full-budget baseline-training study is added.
+The 30-step E3 protocol does not support a time-to-quality claim; E2's long-run comparison supplies quality context, and E6 prespecifies a threshold-based study.
 
 \begin{table}[H]
 \caption{Systems result schema. Every cell will be derived from archived raw artifacts.}
@@ -565,8 +596,8 @@ The 30-step E3 protocol does not support a time-to-quality claim; that quantity 
 \toprule
 System & Configuration & s/iter & samples/s & samples/GPU-h & peak GiB \\
 \midrule
-UniRL & SDPA-class aligned & -- & -- & -- & -- \\
-VeRL-Omni & SDPA aligned & -- & -- & -- & -- \\
+UniRL & Native flow / SDPA-class & -- & -- & -- & -- \\
+VeRL-Omni & Native CPS / SDPA & -- & -- & -- & -- \\
 UniRL & preregistered best valid & -- & -- & -- & -- \\
 VeRL-Omni & FA3 best valid & -- & -- & -- & -- \\
 \bottomrule
@@ -580,14 +611,20 @@ VeRL-Omni & FA3 best valid & -- & -- & -- & -- \\
 
 RQ3 first tests the semantic capability that motivates the IR, then measures its cost.
 E4 uses the executable frozen-Qwen3-0.6B rewrite $\rightarrow$ SD3.5 path: eight original prompts, four rewrites per prompt, and eight images per rewrite, or 256 image descendants per rollout; only diffusion trains.
+This is a separate recipe from E2: $512\times512$, ten steps, one sampled SDE index among 0--8, $\eta=0.7$, LoRA 16/32, learning rate $3\times10^{-4}$, weight decay zero, clip $10^{-4}$, replay anchor, two updates, and microbatch one.
 The primary condition computes group-relative advantages across all 32 descendants of one original prompt, while \texttt{diffusion\_group\_scope=rewrite} groups the eight images under each rewrite.
 Both conditions must serialize redacted root/part/parent IDs, shapes, reward/advantage, replay indices, group labels, and output versions.
 Invalid lineage remains an E0 fail-fast test rather than an intentionally corrupted quality baseline.
 
+For image $x_{p,j,k}$, the two group keys are $g_{\rm root}=p$ and $g_{\rm rewrite}=(p,j)$.
+First, on identical recorded rewards and replay tensors, an ID-joined flat-row reference must reproduce UniRL's group memberships, advantages, and learner inputs for each key, including after root-shard round trips.
+The subsequent 300-rollout, three-seed training comparison changes the normalization population (32 versus eight images); its quality difference is therefore an objective effect, not a causal measurement of the IR's superiority.
+
 This control establishes that retained ancestry selects a real optimization grouping; it does not by itself prove better task quality.
 The current PickScore request is conditioned by the rewritten text, so a claim about preserving the user's original intent additionally requires lineage-keyed evaluation of every image against its root prompt.
 We therefore report both rewrite-conditioned training reward and frozen HPSv3/ImageReward evaluations joined to each root prompt.
-Deterministic trainside-AR seed plumbing, real trace dumping, and the root-prompt evaluation join are E0 prerequisites for a multi-seed E4 result.
+Evaluation generates held-out images at $512\times512$, 40 steps, and guidance 1 with the base and every 50-rollout diffusion checkpoint, using one fixed manifest of four frozen rewrites per root and eight image seeds per rewrite for both conditions.
+Worker/adapter RNG initialization, deterministic trainside-AR sampling, real trace dumping, and this held-out generation/evaluation path are E0 prerequisites for a multi-seed E4 result.
 If the two correct groupings tie, the experiment still establishes semantic expressiveness but not a quality benefit.
 
 We then measure recursive IR operations and tensor transport separately from model compute.
@@ -596,12 +633,14 @@ They report split/concat/select latency, reference metadata bytes, dense bytes a
 
 E5 compares the colocated store, per-GPU store, and TransferQueue path where the hardware supports them.
 At the audited commit the full GPU transport harness is not yet checked in, so implementation and review of that harness is an explicit prerequisite rather than an implied result.
-We also compare whole-tree sharding against a flat-row implementation that explicitly reconstructs equivalent lineage; semantic errors are caught in E0 and are never timed as valid work.
+We compare whole-tree sharding against the explicit ID-joined flat-row reference on the same recorded payloads and with the same transport.
+This paired representation slice holds model work, device placement, values, grouping, and replay inputs fixed; driver RSS, bytes moved, operation time, and fraction of iteration cost measure the price of preserving structure.
+Semantic errors are caught in E0 and are never timed as valid work.
 
 The minimum topology slice reuses E3's colocated SD3.5 UniRL row and adds the same work with \codepath{sd3\_vllmomni\_lora\_separate.yaml}: four GPUs train and four generate while the total eight-GPU allocation remains fixed.
 This pair measures two deployment regimes, not a pure transport primitive---training parallelism, residency, and local versus remote LoRA publication change together and are reported in the phase breakdown.
 Broader same-/cross-GPU and cross-node backend measurements remain E5 extensions.
-We also report which bundle/stage/adapter code E4 requires and which trainer, scheduler, transport, and credit modules remain unchanged; changed lines are supporting evidence, not a standalone quality metric.
+We inventory which bundle/stage/adapter code the existing E4 path uses and which trainer, scheduler, transport, and credit modules it shares. This documents reuse; reduced integration effort would require a separate held-out implementation study.
 
 \paragraph{Preliminary executable evidence.}
 We ran a source-importing regression harness against a clean UniRL checkout at
@@ -638,7 +677,7 @@ under \codepath{artifacts/trajectory\_ir/cpu\_f5d7104\_macos\_arm64/}.
 \label{sec:rq4}
 
 E6 compares E1-derived runs with the same 32-GPU allocation, 64-by-eight rollout work unit, four optimizer updates, reward, evaluator, and 800-rollout budget; disaggregated points fix half the GPUs for training and half for rollout and keep \texttt{per\_worker\_inflight=14}.
-The colocated synchronous point S0 and disaggregated zero-overlap point D0 reveal the allocation/residency cost of separating the slabs; D0 and A1 then isolate the onset of overlap within the same disaggregated trainer and topology.
+The colocated synchronous point S0 and disaggregated zero-overlap point D0 reveal the allocation/residency cost of separating the slabs; D0 and A1 then test the onset of allowed overlap within the same disaggregated trainer and topology. This changes both in-flight capacity and lag allowance, so it is not a single-knob causal effect.
 After a capacity pilot, the remaining primary grid fixes \texttt{max\_inflight=2} and varies publication interval and allowed lag as shown in Table~\ref{tab:async-sweep}.
 Only after the primary grid may in-flight capacity one and four be added at one fixed publication/lag point.
 Natural generation variance is stratified by prompt and response length; any synthetic-delay study is labeled as a secondary stress test.
@@ -656,7 +695,7 @@ Point & Trainer / topology & In-flight & Publish interval & Max lag (batches) & 
 \midrule
 S0 & sync / colocated & -- & 1 & 0 & Total-resource reference \\
 D0 & async / disaggregated & 1 & 1 & 0 & Same-topology no-overlap control \\
-A1 & async / disaggregated & 2 & 1 & 1 & Isolate onset of overlap \\
+A1 & async / disaggregated & 2 & 1 & 1 & Onset of allowed overlap \\
 A2 & async / disaggregated & 2 & 1 & 2 & Isolate lag allowance \\
 A3 & async / disaggregated & 2 & 2 & 2 & Isolate publication cadence \\
 A4 & async / disaggregated & 2 & 2 & 4 & Aggressive bounded point \\
@@ -689,15 +728,17 @@ Microplanner & token budget, 10,240 & default count planner & Match packing and 
 \end{table}
 
 \paragraph{Measurement readiness.}
-The current structured logger supplies end-to-end step time; six coarse phases (wake, generation, sleep, weight synchronization, reward, and aggregate training); rollout diagnostics; peak allocated/reserved GPU memory; and output, train, and published versions with realized lag.
+The current structured logger supplies six coarse phases, rollout diagnostics, GPU memory counters, and output/train/published versions with realized lag.
+Its \texttt{perf/step\_time\_s} field is insufficient as an end-to-end clock: the async trainer logs it before the outer loop's quiescence, publication, evaluation, and checkpoint work.
+E3/E6 therefore require driver-level monotonic timestamps spanning complete iterations and the full run; phase timers are reconciled against that clock rather than summed across overlapping roles.
 Before RQ2 and RQ4, instrumentation must separate credit, replay/anchor, backward, optimizer, checkpoint, and publication-barrier time, and must emit complete per-step series for buffer occupancy and admitted, carried, suspended, rejected, discarded, retried, and completed work.
 GPU utilization and power must be collected by an external monitor synchronized to the run clock.
 Missing structured fields may not be reconstructed from isolated console messages or dashboard screenshots.
 
 \paragraph{Predeclared interpretation and escalation.}
 Expected directions are hypotheses rather than results.
-For E1, independent MATH-500/AIME performance should improve from the base without collapse in length, truncation, group variance, ratio, or clipping diagnostics.
-For E2, PickScore should improve without material loss in GenEval2, independent preference views, or the preregistered diversity guard.
+For E1, the primary external MATH-500 endpoint should improve from the base without collapse in length, truncation, group variance, ratio, or clipping diagnostics.
+For E2, held-out HPSv3 should improve with the optimized PickScore while compositional, ImageReward, and diversity checks diagnose regressions.
 For E3, competitive throughput must survive complete end-to-end and failure accounting.
 For E4, lineage/group membership must be exact, while a quality advantage for original-prompt grouping must be judged against root prompts and remains optional evidence rather than an invariant.
 For E6, moderate lag should reduce idle time and may improve time-to-quality, whereas aggressive lag may increase rejection or harm quality.
@@ -705,41 +746,19 @@ Configuration, logging, parity, lineage, version, checkpoint, and replay/publica
 Changing the optimizer, reward, estimator, formal budget, model/task, evaluator, aligned-baseline definition, or central claim requires a research decision and a newly registered experiment.
 Stable negative results after correctness passes are retained; they are not repaired by silent hyperparameter search.
 
-\begin{figure}[H]
-\centering
-\resizebox{0.94\textwidth}{!}{%
-\begin{tikzpicture}[
-  every node/.style={font=\small},
-  rq/.style={draw=unirlblue,rounded corners,fill=unirlcyan,minimum width=32mm,minimum height=12mm,align=center},
-  artifact/.style={draw=green!45!black,rounded corners,fill=unirlgreen,minimum width=48mm,minimum height=14mm,align=center},
-  claim/.style={draw=orange!75!black,rounded corners,fill=unirlorange,minimum width=43mm,minimum height=14mm,align=center},
-  arr/.style={-{Latex[length=2mm]},thick,draw=unirlblue}
-]
-\node[rq] (rq1) {RQ1: training validity\\multi-seed quality};
-\node[rq,right=5mm of rq1] (rq2) {RQ2: systems efficiency\\cost and scaling};
-\node[rq,below=5mm of rq1] (rq3) {RQ3: abstraction cost\\transport and integration};
-\node[rq,right=5mm of rq3] (rq4) {RQ4: policy lag\\time-to-quality};
-\node[artifact,right=7mm of rq2,yshift=-8mm] (artifact) {Archived evidence bundle\\manifests $+$ traces $+$ evaluators};
-\node[claim,right=6mm of artifact] (claims) {Admitted claims\\matched evidence only};
-\draw[arr] (rq1.east) -- (artifact.west |- rq1.east);
-\draw[arr] (rq2.east) -- (artifact.west |- rq2.east);
-\draw[arr] (rq3.east) -- (artifact.west |- rq3.east);
-\draw[arr] (rq4.east) -- (artifact.west |- rq4.east);
-\draw[arr] (artifact) -- (claims);
-\end{tikzpicture}}
-\caption{Claim-aligned evaluation contract. Training validity, cross-stage lineage, and system cost close the primary claim chain; bounded staleness maps the conditional operating region. Every quantitative claim must resolve to an archived evidence bundle.}
-\label{fig:evaluation-contract}
-\end{figure}
 \paperTODO{Add artifact-generated result panels for learning curves, phase breakdown, scaling and utilization, and the throughput--policy-lag Pareto frontier.}
 
 \subsection{Fairness and statistical protocol}
 
 Effective work is matched before wall-clock time: prompts, samples per prompt, decoded resolution or maximum tokens, rollout steps, replayed steps/tokens, microbatching semantics, and optimizer updates.
-Reward placement is either identical and counted on both sides or excluded with a separate service-cost report.
+Primary full-system metrics count all allocated training, rollout, and reward resources on both sides. Reward placement and concurrency must be disclosed; a reward-excluded number is supplementary and carries a separate service-cost report.
 We prespecify warmup removal, use at least 20 steady-state iterations for throughput summaries, and report the full distribution rather than a single minimum.
 Training summaries use the seed as the statistical unit, show every seed, and report the mean with a 95\% $t$ interval; bootstrap intervals over prompts or images are labeled separately and never substituted for seed uncertainty.
-Systems summaries show all three process-level repetitions and the pooled per-step distribution after the fixed five-observation warm-up.
-Time-to-quality uses the same evaluator and a threshold fixed before comparing systems.
+Systems summaries show all three process-level repetitions and the pooled per-step distribution after the fixed five-observation warm-up; uncertainty of a speed ratio uses repetitions, not correlated steps, as its independent units.
+The final checkpoint and named primary endpoint are fixed in advance; the auxiliary metrics diagnose failure modes and are not alternative endpoints chosen after seeing results.
+Time-to-quality in E6 uses MATH-500 and a threshold recorded before the formal grid, based only on a separate pilot. We report the first observed checkpoint crossing, bracket it by adjacent evaluation times, and censor runs that never cross.
+Elapsed time spans initialization, training, publication, checkpointing, and evaluation; steady-state throughput is reported separately.
+All published cells require complete scoring or an explicit missingness analysis; silently averaging only successful evaluator responses is inadmissible.
 
 \section{Related Work}
 \label{sec:related}
@@ -757,13 +776,13 @@ AReaL fully decouples generation and training and controls staleness to improve 
 Relax uses service-level separation, a TransferQueue data bus, and configurable staleness for omni-modal post-training~\citep{zhang2026relax}.
 slime supports persistent asynchronous rollout generation around a training/rollout/data-buffer loop~\citep{slime2025}.
 These systems make asynchrony an execution design space, not a UniRL novelty claim.
-UniRL contributes a particular version-stamped group and publication-boundary discipline shared by AR and diffusion paths; RQ4 tests whether that discipline is useful.
+UniRL implements a version-stamped group and publication-boundary discipline shared by AR and diffusion paths; RQ4 tests whether that realization is useful, without claiming a new asynchronous RL algorithm.
 
 \paragraph{Multimodal and diffusion post-training systems.}
 VeRL-Omni extends veRL toward diffusion, unified, and omni-modality models and integrates vLLM-Omni rollout~\citep{verlomni2026}.
 Relax is explicitly omni-native~\citep{zhang2026relax}.
 Accordingly, ``supporting image, video, or audio'' cannot be the paper's contribution.
-The comparison instead asks whether a single typed lineage simplifies cross-stage workflows and remains stable across execution modes.
+The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary. E4 tests one concrete workflow; a universal claim of easier integration is outside its evidence scope.
 
 \paragraph{Diffusion RL algorithms.}
 DDPO casts denoising as a multi-step decision process~\citep{black2023ddpo}.
@@ -777,6 +796,7 @@ Its algorithm interface keeps their incompatible replay state explicit while reu
 \paragraph{Integration is not automatic.}
 Each new architecture still needs a bundle, stages, conditions, and adapters for the selected rollout runtime.
 A common trajectory type does not eliminate tokenizer, scheduler, latent-layout, LoRA-target, or serving-version incompatibilities.
+The current ordered-frontier operations also assume compatible depths and parent-contiguous groups; arbitrary ragged forests, shared-field equality, and adversarial row order are not uniformly validated by the container itself.
 
 \paragraph{Topology is configured, not optimized.}
 Placement scopes make resource choices explicit but do not search for the best split.
@@ -864,6 +884,7 @@ Every result row must resolve to a run directory containing:
 For training runs, serialized trace samples must redact private data while retaining lineage IDs, shapes, dtypes, policy versions, reward components, and segment index metadata.
 For system baselines, an alignment manifest must explain every nonidentical setting and whether it changes effective work.
 
+\clearpage
 \section{Correctness status and remaining checks}
 \label{app:correctness}
 
@@ -877,13 +898,14 @@ bounds behavior. The structured outcomes and data-sensitive SHA-256 round-trip h
 are stored with the run artifacts.
 
 \paragraph{Required before performance interpretation.}
-The following system-level checks remain prerequisites for RQ1, RQ2, and RQ4:
+The following system-level checks remain prerequisites for all applicable RQs:
 \begin{enumerate}
   \item \textbf{Rollout--replay parity:} before the first update, compare engine-emitted and train-side replay log probabilities or transition statistics under stated numerical tolerances.
   \item \textbf{Publication parity:} repeat the parity check after each LoRA or full-weight publication path used in an experiment.
   \item \textbf{Batch-version integrity:} verify that an optimizer batch never mixes behavior versions when the configured algorithm assumes one version.
   \item \textbf{Boundary integrity:} checkpoint and evaluation begin only after the async manager is empty; resume restores the optimizer version and republishes it before new rollout.
   \item \textbf{Work accounting:} compare generated tokens or pixels, denoising and replay steps, scored samples, and committed optimizer updates across systems.
+  \item \textbf{Structural preconditions:} validate unique root IDs, equal frontier depth, parent-major grouping, shared-field equality, and version provenance before merging or propagating credit; check against an ID-joined reference.
 \end{enumerate}
 
 \end{document}

@@ -7,13 +7,13 @@ GPU machine. It is intentionally written before the GPU runs. It contains
 prespecified settings, commands, expected signals, admission gates, and paper
 destinations, but no invented measurements.
 
-The paper's job is not to show that UniRL has many recipes. It must establish two
-primary claims and two explanatory claims:
+The paper studies a trajectory representation and its execution contracts.
+The empirical obligations are:
 
 1. **Training validity (RQ1):** the same trajectory-centric system produces
    credible learning for one AR and one diffusion workload.
-2. **Systems efficiency (RQ2):** under matched work and hardware, UniRL has
-   competitive end-to-end cost, with transparent phase and resource accounting.
+2. **Systems efficiency (RQ2):** measure full-stack cost under matched hardware
+   and disclosed work/algorithm differences, with complete resource accounting.
 3. **Abstraction value (RQ3):** lineage-aware trajectory handling selects a real
    cross-stage objective; a matched UniRL topology pair and transport measurements
    bound the cost of preserving and moving that structure.
@@ -22,6 +22,34 @@ primary claims and two explanatory claims:
 
 Do not silently tune a failed experiment until it looks good. Preserve the failed
 run, diagnose it, and register any changed configuration as a new experiment.
+
+Read `PAPER_REVIEW.md` for the 2026-09-05 re-review and source limitations. The
+commands below are audited launch templates, not evidence that formal runs are
+ready: E0 instrumentation, RNG initialization, and evaluator/export work must
+first pass. No GPU training was performed while preparing this handoff.
+
+### Start here: readiness, not just launch order
+
+The source has training entrypoints; it does **not** yet have a complete,
+paper-admissible experiment pipeline. A fresh GPU-side agent should first produce
+`E0/readiness.md`, linking each gate to its test artifact and code commit.
+
+| Scope | Existing entrypoints | Work required before the formal row |
+|---|---|---|
+| All applicable rows | Hydra trainers, checkpoint writers, coarse logger | Validate environment/allocation, structural and replay/publication invariants, actual work counts, worker RNG and resume behavior; archive resolved configs |
+| E1 | AR training, full export, text benchmark CLI | Audit chat-template/thinking/content handling, evaluation RNG and overlap; adapted veRL baseline is absent |
+| E2 | Diffusion training, adapter export, image generation/scoring client | Pin and smoke-test reward service; implement LPIPS aggregation; verify all scores are present |
+| E2-R | Pinned-baseline launcher | Initialize upstream, validate environment and checkpoint output/export; native flow/CPS differences still block strict reproduction |
+| E3 / E5-T | Launchers and console parsers | Add complete driver-clock and phase instrumentation; audit all GPU allocations and resolved work parity |
+| E4a / E4b | Frozen-AR PE trainer | Implement ID-joined oracle, real trace dumps, trainside-AR RNG plumbing, cached held-out rewrite/image generation and scoring |
+| E5-R | Local CPU regression only | Implement same-payload tree/flat-ID-join GPU measurement harness; verify equality before timing |
+| E6 (P1) | Async trainer and manager | Match all non-topology semantics; instrument buffer/lag/barriers; preregister target from a separate pilot |
+
+The first GPU allocation should close E0 and export/evaluator smoke tests, not
+launch every long run. Missing harness commands below are explicitly marked as
+interface specifications. Implement them in the source/artifact repository, never
+inside this Overleaf repository; archive their new commit and patch against the
+audited source. A correctness fix does not authorize an unrecorded recipe change.
 
 ## 1. Fixed source state and repository roles
 
@@ -69,16 +97,21 @@ part of the run artifact.
 |---|---:|---|---|---|
 | E0 | P0 gate | Environment, config parity, replay/publication correctness, instrumentation | Prevents invalid quality or speed claims | Evaluation preflight; Appendix `Correctness status` |
 | E1 | P0 | Qwen3-4B-Base GRPO on DAPO-Math, >=3 seeds | Establishes AR training validity | RQ1 AR; RQ1 table; learning-curve figure |
-| E2 | P0 | SD3.5-Medium FlowGRPO + independent image eval, >=3 seeds | Establishes diffusion training validity and collapse guards | RQ1 diffusion; RQ1 table; learning-curve figure |
-| E3 | P0 | UniRL vs VeRL-Omni aligned SD3.5 performance pair | Supplies the cleanest end-to-end systems comparison | RQ2 table; phase-breakdown figure |
+| E2 | P0 | SD3.5-Medium, full-budget UniRL and VeRL-Omni runs, >=3 seeds each | Training validity and reference context; reproduction requires estimator parity | RQ1 diffusion; RQ1 table; learning-curve figure |
+| E3 | P0 | UniRL vs VeRL-Omni shape-matched native SD3.5 recipes | Full-stack comparison; strict algorithm parity is not yet established | RQ2 table; phase-breakdown figure |
 | E4 | P0 | Prompt enhancement, `prompt` vs `rewrite` grouping | Directly tests whether lineage selects a meaningful cross-stage objective | RQ3 lineage/enablement result |
 | E5 | P0 minimum / P2 extensions | IR/transport costs plus matched colocated/separate UniRL rows | Quantifies abstraction and execution costs | RQ3 transport/topology table and scaling plot |
 | E6 | P1 | Matched sync/async AR sweep | Tests throughput-lag-quality trade-off | RQ4 Pareto plot and async table |
 
-Order is mandatory: E0 -> E1/E2 -> E3/E4 -> minimum E5 -> E6/E5 extensions. E3 may run as
-soon as its E0 systems gates pass; it does not have to wait for all E1/E2 seeds.
+Execution dependencies are per experiment: after its applicable E0 gates pass,
+E1/E2, E3, and E4 can proceed independently. Complete the minimum E5 slice before
+E6 and broader E5 extensions. A long E1/E2 seed need not delay E3.
 If compute is constrained, complete primary E0-E5 before broadening models or algorithms:
 E4 directly tests lineage, and the minimum E5 slice bounds the abstraction's cost.
+At least one E1/E2 full-budget reference must pass mathematical and effective-work
+parity to close the reference-reproduction obligation. If neither passes, keep
+that obligation open; successful learning and native-recipe comparisons alone
+cannot close it.
 
 ## 3. Evidence directory contract
 
@@ -195,7 +228,11 @@ python -m unirl.train_ar \
 ```
 
 Run `DRY_RUN=1` through the selected launcher as a second command-construction
-check. Resolved sync/async and UniRL/baseline configs must also be converted into
+check **only for `examples/run_experiment_single_node.sh`**, which implements it.
+The two `run_*_sd35_aligned.sh` scripts ignore that variable and would train.
+For those Hydra launchers, append `--cfg job --resolve` plus the exact formal
+overrides instead; verify the printed configuration and absence of worker startup.
+Resolved sync/async and UniRL/baseline configs must also be converted into
 `parity.tsv`; source YAML comments are not parity evidence.
 
 ### 6.2 Required correctness tests
@@ -213,20 +250,34 @@ Before E1-E6 results are interpreted, verify and archive:
 6. fixed seeds actually change across seed IDs and reproduce when the same seed
    is rerun.
 
+Check actual emitted root counts (not only `trainer.batch_size`) and perform a
+train/validation/test overlap audit on normalized prompts and problem IDs.
+For the IR, validate unique root IDs, matching part depth/schema, shared fields
+(especially versions), and uniform parent-contiguous rows at each merge/credit
+boundary. `Sample.__post_init__` checks adjacency only; `propagate_rewards` uses
+parent-major reshape, and generic `Batch.concat` takes the first shared value.
+An ID-joined reference must agree on rewards and advantages after root sharding.
+The ten archived CPU checks do not cover arbitrary permutations or ragged depth.
+
 SGLang 0.5.12.post1 accepts `random_seed` as a server argument; UniRL forwards
 unknown engine settings through `rollout.config.engine_kwargs`, hence the explicit
-override above. The trainside AR sampler used by E4 currently has no equivalent
-top-level seed field. Add and verify deterministic seed plumbing before calling E4
-a multi-seed result; otherwise label it as repeated runs with uncontrolled sampler
-state.
+override above. These fields do not seed worker model construction or LoRA
+initialization. Before E1/E2/E4/E6, add an audited worker RNG initialization path
+before model/adapter construction, with identical trainable initialization across
+replicas and documented independent sampling streams. Include Python, NumPy,
+PyTorch CPU/CUDA, data order, SDE-index selection, and generation RNG states in
+the seed/resume audit. The trainside AR sampler used by E4 has no equivalent
+top-level seed field and needs explicit plumbing. Do not invent a `seed=` Hydra
+override until the code consumes it. Async request scheduling may remain
+nondeterministic: record that boundary and never promise bitwise reproducibility.
 
 ### 6.3 Instrumentation blockers
 
-Do not start formal E3 or E6 until structured output includes:
+Before formal runs, complete the applicable additions:
 
 - credit, replay/anchor, backward, optimizer, checkpoint, quiesce, and publication
   barrier durations;
-- per-step buffer roots/prompts in admission, ready, carry, suspended, completed,
+- for E6, per-step buffer roots/prompts in admission, ready, carry, suspended, completed,
   rejected, discarded, and retry states;
 - sampled, redacted real trajectory records containing root/part/parent IDs,
   modality, shapes/dtypes, output versions, reward components, advantages, and
@@ -235,14 +286,32 @@ Do not start formal E3 or E6 until structured output includes:
   score each image against its root prompt as well as its immediate rewrite;
 - external GPU utilization/power telemetry synchronized to the run clock.
 
-The current logger already has end-to-end step time, six coarse phases, rollout
-diagnostics, GPU peak memory, and policy versions. Missing fields must not be
-reconstructed later from screenshots or isolated console lines.
+The current logger has six coarse phases, rollout diagnostics, GPU memory, and
+policy versions. Its `perf/step_time_s` is NOT a complete driver interval:
+`async_ar.py` / `async_diffusion.py` log before the outer `async_rollout.py` loop
+quiesces, publishes, evaluates, and saves. Add a monotonic driver event timeline
+with process start, initialization end, batch admission/commit, publication,
+evaluation completion, checkpoint completion, and process end. Use consecutive
+complete boundaries for throughput and real elapsed time for time-to-quality.
+Do not sum overlapping role durations or infer elapsed time by summing the old
+step field. Record startup separately; include eval/checkpoint/publication in
+the full-budget clock. E2/E4 evaluator work need not block E3, and async-only
+buffer fields need not block synchronous studies.
 
 ### 6.4 Smoke runs
 
 Smoke runs prove execution only and never enter result tables. Adjust batch sizes
 to satisfy the allocation's divisibility rules.
+
+**Ray safety:** the single-node wrapper below unconditionally calls `ray stop`
+and starts a local head. Use it only on an exclusively allocated node with no
+unrelated Ray jobs. Do not use it to attach to an existing/shared/multi-node
+cluster, including the E4 wrapper later in this file. On such allocations, use
+the site's job launcher and the equivalent `python -m unirl.train_*` command,
+with an explicit total `num_devices` and the verified cluster address. Never
+stop another user's Ray runtime. Direct E1/E2/E3/E5/E6 commands assume the
+intended Ray cluster/allocation has already been established; verify visible
+GPU resources and worker environment/model/data access on every node first.
 
 AR smoke on 8 GPUs (32 samples / rollout, four updates):
 
@@ -253,6 +322,7 @@ ENTRY=train_ar GPUS_PER_NODE=8 REPORT_TO_WANDB=false \
 QWEN3_PATH="$QWEN3_PATH" DATA_PATH="$DATA_PATH" EVAL_DATA_PATH="$EVAL_DATA_PATH" \
 bash examples/run_experiment_single_node.sh ar/qwen3_grpo_4b_base_dapo_sglang \
   num_rollouts=2 batch_size=8 sampling.samples_per_prompt=4 eval_interval=0 \
+  data_source.args.algorithm.prompts_per_rollout=8 \
   sampling.max_new_tokens=1024 rollout.config.max_new_tokens=1024 \
   stack.micro_planner.token_budget=2048 +save_interval=2 \
   +save_dir="$ARTIFACT_ROOT/E0/ar-smoke/checkpoints" +save_mode=full
@@ -283,14 +353,15 @@ changes into a formal row.
 - data: DAPO-Math-17k JSONL; 64 prompts x 8 samples = 512 trajectories/rollout;
 - generation: SGLang TP=1, thinking enabled, temperature/top-p 1.0, top-k off,
   maximum 8192 new tokens;
-- objective: textbook GRPO, group-std normalization, symmetric clip 0.2,
+- objective: GRPO, population group-std normalization, symmetric clip 0.2,
   `seq-mean-token-mean`, no stated KL term;
 - learner: four disjoint optimizer updates/rollout, 10,240-token planner,
   AdamW lr 1e-6, weight decay 0.01;
 - schedule: 800 rollouts, full-weight publication every rollout, internal AIME
   evaluation every 10 rollouts, full checkpoints every 200 rollouts;
 - formal allocation: 32 GPUs total; GPU model/nodes/interconnect remain `<blank>`;
-- independent seed IDs: 11, 22, 33, applied to data order and SGLang server RNG.
+- seed IDs: 11, 22, 33, applied to data order and SGLang RNG, plus the E0 worker
+  initialization patch; these CLI fields alone do not control every RNG.
 
 ### 7.2 Formal command
 
@@ -337,11 +408,11 @@ Serve one frozen checkpoint in the SGLang environment:
 ```bash
 python -m sglang.launch_server \
   --model-path "$RUN_DIR/checkpoints/hf-800" \
-  --host 127.0.0.1 --port 30000 --tp-size 1 --random-seed "$SEED"
+  --host 127.0.0.1 --port 30000 --tp-size 1 --random-seed 42
 ```
 
-Then run the registered fixed protocols (repeat `-b`; a comma-separated name is
-not valid):
+Then run the registered fixed protocols (repeated `-b` is the canonical style;
+the audited parser also supports comma-separated names):
 
 ```bash
 python -m benchmarks.run \
@@ -351,8 +422,17 @@ python -m benchmarks.run \
 ```
 
 At 800 rollouts and four updates/rollout, the final optimizer update is 3200.
-Checkpoint selection is best among the prespecified saved checkpoints according to
-the internal evaluation; report both best and final, never best alone.
+The final checkpoint is primary. Internal eval uses AIME 2024/2025, so selecting
+the best checkpoint on it makes its AIME score validation-selected, not untouched
+test evidence. Report that only as a labeled secondary result. Primary AR quality
+is final MATH-500 avg@4; final AIME curves are secondary. `avg@k` means average
+accuracy across k answers, not probability of at least one correct answer.
+The benchmark client sends chat-completions requests without a per-request seed
+or explicit thinking override. Before formal evaluation, verify the server's
+rendered token IDs/template, reasoning/content response handling, and RNG behavior
+against the intended protocol; seed or resume fixes belong to E0. Use a fixed
+evaluation seed of 42 for every checkpoint, separate from the training seed, and
+archive all completions and request settings.
 
 ### 7.4 AR reference baseline gate
 
@@ -363,6 +443,7 @@ budget, and KL/objective settings. Before any head-to-head AR row:
 ```bash
 git clone https://github.com/verl-project/verl.git third_party/verl
 git -C third_party/verl checkout <VERL_COMMIT>
+mkdir -p experiments/baselines
 cp third_party/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
   experiments/baselines/run_verl_qwen3_4b_dapo_aligned.sh
 ```
@@ -395,10 +476,11 @@ generic trajectory path does not prevent credible AR training.
 
 ### 8.1 Prespecified setting
 
-Use the same aligned SD3.5 setting later used in E3: SD3.5-Medium, 48 prompts x
+Use the UniRL SD3.5 native setting later used in E3: SD3.5-Medium, 48 prompts x
 16 images = 768 samples/rollout, 384 x 384 training resolution, ten denoising
 steps, three SDE steps in the first half, eta 0.8, guidance 1, distinct initial
-noise, PickScore, LoRA r32/alpha64 on the same eight attention projections, two
+noise, PickScore, prompt-group centering with batch-wide reward std, LoRA
+r32/alpha64 on the same eight attention projections, two
 optimizer updates, microbatch 8, lr/weight decay 1e-4, clip 1e-5, and publication
 every rollout. Prespecify 300 rollouts and seeds 11/22/33. The allocation is one
 8-GPU node; exact hardware remains `<blank>`.
@@ -426,43 +508,142 @@ Repeat with seeds 22 and 33. If a 300-rollout budget is changed before the first
 formal run for a documented compute reason, update the paper and this file first.
 Never extend only a seed that looks promising.
 
-### 8.3 External evaluation and guard metrics
+### 8.3 Full-budget reference (E2-R)
+
+The 30-step E3 run cannot answer the training-reference question. After preparing
+the pinned VeRL-Omni environment/data in Section 9, use 300 steps, checkpoint every
+50 steps, and the same seed IDs 11/22/33. The launcher accepts trailing overrides:
+
+```bash
+export SEED=11
+export RUN_ID=E2-verlomni-native-s${SEED}
+export RUN_DIR="$ARTIFACT_ROOT/E2/verlomni/$RUN_ID"
+mkdir -p "$RUN_DIR/logs" "$RUN_DIR/checkpoints"
+source "$VERLOMNI_VENV/bin/activate"
+cd "$UNIRL_ROOT"
+SD35="$SD35" DATA="$PICKSCORE_PARQUET" STEPS=300 ATTN=sdpa \
+bash benchmarks/speed_benchmarks/verl_omni/run_verlomni_sd35_aligned.sh \
+  data.seed="$SEED" actor_rollout_ref.rollout.seed="$SEED" \
+  trainer.save_freq=50 trainer.project_name=unirl-paper \
+  trainer.experiment_name="$RUN_ID" \
+  >"$RUN_DIR/logs/stdout.log" 2>"$RUN_DIR/logs/stderr.log"
+```
+
+Before formal launch, resolve the pinned baseline's checkpoint output location,
+archive it in `checkpoints/index.json`, and smoke-test its native checkpoint to
+PEFT/diffusers export through the common evaluator. That exporter/path is not yet
+audited; this is an E2-R admission blocker, not a license to guess a directory.
+Worker initialization/RNG controls must also be audited in the baseline.
+
+The stock pair is **shape-matched, not estimator-matched**: UniRL selects
+`FlowSDEStrategy`, sparse early indices, batch-wide reward std and its anchor;
+the baseline launcher specifies CPS, a three-step window, and separate actor
+likelihood machinery. Validate transition mean/variance, normalization, exact
+indices and anchor semantics numerically. Until these are matched, label E2-R a
+native-recipe reference and compare learning curves with that limitation. An
+algorithm-equivalent reproduction claim remains blocked. Register any adapted
+parity pair separately and run both full budgets after E0.
+
+### 8.4 External evaluation and guard metrics
 
 Evaluate the base and checkpoints 50/100/150/200/250/300. `benchmarks.run`
 automatically exports a UniRL LoRA checkpoint passed via `--lora`.
 
-GenEval2 compositional evaluation with the registered local Qwen3-VL scorer:
+The `image/geneval2` registry key uses `datasets/geneval2/synthetic/test.jsonl`
+and a local Qwen3-VL scorer. Name the paper row **synthetic compositional set /
+Soft-TIFA-style Qwen3-VL**, not official GenEval2, unless a separate audit matches
+the official data, scorer, aggregation and generation protocol. Keep the registry
+key for commands. Archive prompt count, overlap audit, data hash, and scorer hash.
+
+Use explicit checkpoint tags and a common evaluation seed 42 across training seeds
+and systems. The generation protocol is 512x512, 40 steps, guidance 1. The synthetic
+registry also fixes a linear sigma grid, prompt-hashed image seeds, and maximum
+text-encoder length 256; preference uses the pinned pipeline's default schedule
+and index-based image seeds. Archive both complete pipeline configs.
+
+Synthetic compositional evaluation:
 
 ```bash
 python -m benchmarks.run -b image/geneval2 \
   --ckpt "$SD35" --lora "$RUN_DIR/checkpoints/checkpoint-300" \
-  --out "$RUN_DIR/evaluation" --local-geneval2 --seed "$SEED"
+  --out "$RUN_DIR/evaluation" --tag "$RUN_ID-r300" \
+  --local-geneval2 --geneval2-model "$GENEVAL2_MODEL" --seed 42 \
+  --height 512 --width 512 --steps 40 --guidance 1
 ```
 
 Preference views over PartiPrompts (requires a pinned reward service):
 
+The benchmark client requires a multi-reward `/rewards` and `/score` endpoint
+serving `hpsv3`, `pickscore`, and `imagereward`. The separate server source is in
+`unirl-reward-service/`; its `reward_service.__main__` accepts `--config`.
+Prepare its separate environment and a pinned service YAML from
+`configs/service.example.yaml`, enabling only the required scorers with validated
+checkpoint paths and assigned GPUs. Archive the server config, scorer dependency
+versions and checkpoint hashes. The stock example is not a ready paper config.
+
 ```bash
-export REWARD_SERVICE_URL=http://<reward-host>:8080
-python -m benchmarks.run -b image/preference \
-  --ckpt "$SD35" --lora "$RUN_DIR/checkpoints/checkpoint-300" \
-  --out "$RUN_DIR/evaluation" --reward-url "$REWARD_SERVICE_URL" --seed "$SEED"
+source "$REWARD_VENV/bin/activate"
+cd "$UNIRL_ROOT/unirl-reward-service"
+python -m reward_service --config "$REWARD_CONFIG"
 ```
 
-Run the same commands without `--lora` for the base. Archive images, prompt/sample
-indices, seeds, scores, evaluator errors, and summaries. Report HPSv3 and ImageReward
-as views independent of the PickScore training reward; the registry's PickScore
-output is a useful consistency check but is not independent evidence.
+Run that service as a separate allocation/session. In the benchmark terminal,
+reactivate `$UNIRL_ROOT/.venv`, return to `$UNIRL_ROOT`, and probe
+`GET /rewards`, then score a tiny generated-image batch with all three requested
+metrics. Assert one finite score per metric per image. A healthy HTTP response
+alone is insufficient; missing optional scorer dependencies must block E2/E4
+evaluation. Record the service GPU-hours separately from training and include
+them wherever reporting full training-plus-evaluation cost.
+
+```bash
+export REWARD_SERVICE_URL="http://<reward-host>:8080"
+python -m benchmarks.run -b image/preference \
+  --ckpt "$SD35" --lora "$RUN_DIR/checkpoints/checkpoint-300" \
+  --out "$RUN_DIR/evaluation" --tag "$RUN_ID-r300" \
+  --reward-url "$REWARD_SERVICE_URL" --seed 42 \
+  --height 512 --width 512 --steps 40 --guidance 1
+```
+
+Set `GENEVAL2_MODEL` to a pinned local Qwen3-VL-8B-Instruct snapshot before running.
+Run the same commands without `--lora` and with `--tag base` for the base; change
+both adapter path and tag at each saved checkpoint. For the baseline use its
+verified exported PEFT adapter, not a guessed native checkpoint path.
+The primary image endpoint is final-checkpoint PartiPrompts HPSv3. ImageReward,
+synthetic composition, and diversity are supporting diagnostics. These are frozen
+automatic judges distinct from optimized PickScore, not independent human studies.
+`benchmarks.run` can average successful scores while omitting failed responses:
+admission requires all expected per-metric scores or an explicit missingness
+analysis. Generation resumes by existing filenames, so never reuse an output tag
+after changing checkpoint, prompts, seeds, or decoding. Archive resolved generation
+settings separately because `summary.json` does not include all of them.
 
 The preregistered diversity guard is within-prompt mean pairwise LPIPS with AlexNet
-features over 16 fixed image seeds per evaluation prompt. Use identical prompts and
-image seeds for base and checkpoints; report the prompt-level paired relative change
-and 95% bootstrap interval. A greater than 10% relative decline from base is material
-diversity loss. Before formal E2, implement and smoke-test a stable CLI such as:
+features over 16 images per PartiPrompts prompt, generated with the same setting
+and seeds for base and checkpoints. Generate these separately from the one-image
+preference endpoint:
+
+```bash
+python -m benchmarks.run -b image/preference --stage generate \
+  --ckpt "$SD35" --lora "$RUN_DIR/checkpoints/checkpoint-300" \
+  --out "$RUN_DIR/evaluation/diversity" --tag "$RUN_ID-r300" \
+  --samples-per-prompt 16 --seed 42 \
+  --height 512 --width 512 --steps 40 --guidance 1
+```
+
+Repeat for base with `--tag base` and no `--lora`. Build the group manifest from
+the registry's deduplicated prompt order and image filenames (not training traces).
+Normalize RGB tensors to [-1,1], use frozen LPIPS AlexNet weights, average the 120
+unordered image-pair distances per prompt, and then average prompts. Report
+`(mean_candidate - mean_base) / mean_base` with a paired prompt bootstrap (10,000
+resamples, RNG 20260905) and seed-level training summaries separately. A >10%
+decrease is a study-specific investigation trigger, not an established quality
+threshold; if base is near zero report absolute change and flag the relative
+criterion undefined. Before formal E2 implement and smoke-test:
 
 ```bash
 python experiments/evaluation/compute_lpips_diversity.py \
-  --base-images "$RUN_DIR/evaluation/base/diversity/images" \
-  --candidate-images "$RUN_DIR/evaluation/checkpoint-300/diversity/images" \
+  --base-images "$RUN_DIR/evaluation/diversity/base/image_preference/images" \
+  --candidate-images "$RUN_DIR/evaluation/diversity/$RUN_ID-r300/image_preference/images" \
   --group-manifest "$RUN_DIR/evaluation/diversity_groups.jsonl" \
   --network alex --bootstrap 10000 --seed 20260905 \
   --output "$RUN_DIR/evaluation/checkpoint-300/lpips_diversity.json"
@@ -471,9 +652,9 @@ python experiments/evaluation/compute_lpips_diversity.py \
 This is an interface requirement, not a checked-in executable at the audited commit.
 LPIPS guards against within-prompt collapse; do not present it as image quality.
 
-### 8.4 Expected signal and failure meaning
+### 8.5 Expected signal and failure meaning
 
-The hypothesis is that PickScore improves while GenEval2, independent preference
+The hypothesis is that PickScore and held-out HPSv3 improve while synthetic composition, preference
 scores, and the prespecified diversity guard do not collapse. This is a stronger
 claim than reward improvement alone.
 
@@ -486,7 +667,7 @@ claim than reward improvement alone.
 - No learning after parity passes: human research decision. Do not silently switch
   model, reward, eta, or SDE window.
 
-## 9. E3: aligned end-to-end SD3.5 systems comparison
+## 9. E3: shape-matched native SD3.5 systems comparison
 
 Initialize the pinned VeRL-Omni submodule and build its environment according to
 its pinned installation guide:
@@ -495,34 +676,48 @@ its pinned installation guide:
 cd "$UNIRL_ROOT"
 git submodule update --init benchmarks/speed_benchmarks/verl_omni/upstream
 git -C benchmarks/speed_benchmarks/verl_omni/upstream rev-parse HEAD
-python benchmarks/speed_benchmarks/verl_omni/make_pickscore_parquet.py
+export PICKSCORE_PARQUET="$ARTIFACT_ROOT/inputs/pickscore_sd3"
+python benchmarks/speed_benchmarks/verl_omni/make_pickscore_parquet.py \
+  --out "$PICKSCORE_PARQUET"
+mkdir -p "$ARTIFACT_ROOT/E3"
 ```
+
+Set `VERLOMNI_VENV` to the separately validated baseline venv and
+confirm `PICKSCORE_PARQUET` matches the output directory printed by the preparation
+script. Archive both. Audit reward-service device placement and count all its
+GPUs in the allocation; an uncounted extra reward GPU invalidates GPU-hour claims.
+The file names contain `aligned`, but the flow/CPS and sparse/window differences
+in Section 8.3 prevent an equivalent-algorithm claim. An SDPA row aligns attention
+class only. Keep native rows labeled, and register any semantically aligned pair
+separately after resolved and numerical parity checks.
 
 Run each system alone on the same reserved 8-GPU node. Use three process-level
 replicates per configuration, 30 steps each, discard exactly the first five timing
-observations, and retain at least 20 observations. Keep caches/clocks consistent
+observations, and retain at least 20 observations. Randomize framework order within
+each repetition block. Keep caches/clocks consistent
 and record any failed step rather than restarting it out of the distribution.
 
-UniRL aligned row:
+UniRL native-flow / backend-matched row:
 
 ```bash
 source "$UNIRL_ROOT/.venv/bin/activate"
 cd "$UNIRL_ROOT"
 SD35="$SD35" STEPS=30 REPORT_TO_WANDB=true \
 bash benchmarks/speed_benchmarks/verl_omni/run_unirl_sd35_aligned.sh \
-  logging.report_to_wandb=true logging.run_name=E3-unirl-aligned-r1 \
-  >"$ARTIFACT_ROOT/E3/unirl-aligned-r1.log" 2>&1
+  logging.report_to_wandb=true logging.run_name=E3-unirl-native-sdpa-r1 \
+  >"$ARTIFACT_ROOT/E3/unirl-native-sdpa-r1.log" 2>&1
 
 python benchmarks/speed_benchmarks/parse_perf.py \
-  "$ARTIFACT_ROOT/E3/unirl-aligned-r1.log" \
+  "$ARTIFACT_ROOT/E3/unirl-native-sdpa-r1.log" \
   --skip 5 --samples-per-step 768 --gpus 8
 ```
 
-VeRL-Omni backend-aligned row:
+VeRL-Omni native CPS / SDPA row:
 
 ```bash
 cd "$UNIRL_ROOT"
-SD35="$SD35" STEPS=30 ATTN=sdpa \
+source "$VERLOMNI_VENV/bin/activate"
+SD35="$SD35" DATA="$PICKSCORE_PARQUET" STEPS=30 ATTN=sdpa \
 bash benchmarks/speed_benchmarks/verl_omni/run_verlomni_sd35_aligned.sh \
   >"$ARTIFACT_ROOT/E3/verlomni-sdpa-r1.log" 2>&1
 
@@ -534,14 +729,14 @@ python benchmarks/speed_benchmarks/verl_omni/parse_verl_timing.py \
 VeRL-Omni best-valid attention row:
 
 ```bash
-SD35="$SD35" STEPS=30 ATTN=fa3 \
+SD35="$SD35" DATA="$PICKSCORE_PARQUET" STEPS=30 ATTN=fa3 \
 bash benchmarks/speed_benchmarks/verl_omni/run_verlomni_sd35_aligned.sh \
   >"$ARTIFACT_ROOT/E3/verlomni-fa3-r1.log" 2>&1
 ```
 
 Only call a UniRL configuration “best valid” if it was registered before looking
-at the final comparison. The launchers align effective work, but inherent engine,
-log-probability, and SDE-kernel differences remain and must be disclosed. The
+at the final comparison. The native launchers match sample geometry, but algorithm,
+log-probability, reward allocation, and SDE differences remain. The
 current console parsers are cross-checks; paper phase plots must come from the
 structured instrumentation required by E0.
 
@@ -558,12 +753,28 @@ side trains. The primary condition groups all 32 descendant images by original
 prompt; the executable control changes only `diffusion_group_scope=rewrite`, which
 groups eight images under each rewritten prompt.
 
+Do not inherit E2 hyperparameters: E4 fixes 512x512, ten steps, one SDE index
+sampled among 0--8, eta 0.7, guidance 1, LoRA 16/32, lr 3e-4, weight decay 0,
+clip 1e-4, replay anchor, two updates, and microbatch 1. The frozen AR sampler
+uses temperature 0.7, top-p 0.9, top-k 1024 and 512 new tokens. Freeze the rewritten
+prompt template and AR parameter hash; assert no AR optimizer exists and hashes
+remain unchanged after training.
+
+E4a is a fixed-trajectory semantic check: from the same rewards/segments, compare
+UniRL's groups, advantages and replay inputs with a flat-row reference joined by
+explicit root/parent IDs, for both `prompt` and `rewrite` scopes. Include root-shard
+split/concat and shuffled flat rows followed by ID reconstruction. Equality is
+required; a deliberate bad row order is an E0 input-validation test.
+E4b is the training comparison below. It changes the normalization population
+(32 versus 8 images), so a quality difference is an objective effect, not proof
+that the IR is better than flat storage.
+
 Do not implement a deliberately corrupted lineage as the quality baseline. Invalid
 lineage belongs in E0 fail-fast tests; prompt-scope versus rewrite-scope is the
 scientifically interpretable ablation.
 
-After adding redacted trajectory dumping and deterministic trainside-AR seed
-plumbing, run seeds 11/22/33 for both scopes:
+After E0 worker/sampler RNG controls, redacted trace dumping, and E4a pass, run
+seeds 11/22/33 for both scopes:
 
 ```bash
 export SCOPE=prompt
@@ -586,23 +797,38 @@ bash examples/run_experiment_single_node.sh \
   >"$RUN_DIR/logs/stdout.log" 2>"$RUN_DIR/logs/stderr.log"
 ```
 
-Expected result: both conditions preserve complete parent/child traces and produce
-the intended advantage groups. The current PickScore request uses the immediate
-rewrite as text conditioning, so it cannot by itself establish preservation of the
-root user's intent. Build a lineage-keyed evaluation manifest with one row per image,
-including `root_prompt`, `rewrite`, image path/hash, root/part IDs, scope, seed, and
-checkpoint. Score the same image once against its root prompt and once against its
-rewrite, using frozen evaluator revisions. A stable interface should be:
+PE checkpoints place the trainable side under `checkpoint-<rollout>/diffusion`;
+the checkpoint root is not a single-stage adapter. Verify this in the export smoke.
+The stock PE run does not generate the required held-out evaluation images
+(`eval_interval` defaults to zero). Training trace samples cannot substitute for
+checkpoint evaluation. Implement a separate generation-and-scoring harness:
+
+1. Freeze the full held-out `datasets/pickscore/test.txt` root list after overlap
+   audit, and generate/cache four rewrites per root once with the frozen Qwen
+   model, the training prompt template and sampler, and a fixed evaluation RNG.
+2. For base and checkpoints 50/100/150/200/250/300 of both scopes and all seeds,
+   generate eight images per rewrite from identical image seeds at 512x512,
+   40 steps, guidance 1, through the common frozen diffusion evaluation pipeline.
+3. Make one immutable row per image with root/rewrite text, root/parent IDs,
+   image hash/path, seed, scope, checkpoint, and template/model/evaluator hashes.
+   Score each image against its root and its rewrite with HPSv3/ImageReward.
+   Average images then rewrites then roots; bootstrap roots, never treat 32 image
+   descendants as 32 independent prompts. Report training-seed variability too.
+
+The interface to implement and verify before formal E4 is:
 
 ```bash
 python experiments/evaluation/evaluate_pe_lineage.py \
-  --trace "$RUN_DIR/metrics/trajectory_samples.jsonl" \
-  --images "$RUN_DIR/evaluation/images" \
+  --base "$SD35" --adapter "$RUN_DIR/checkpoints/checkpoint-300/diffusion" \
+  --rewrite-manifest "$ARTIFACT_ROOT/E4/inputs/frozen_eval_rewrites.jsonl" \
+  --samples-per-rewrite 8 --seed 42 --height 512 --width 512 --steps 40 --guidance 1 \
   --evaluators hpsv3,imagereward \
-  --output "$RUN_DIR/evaluation/lineage_alignment.jsonl"
+  --output "$RUN_DIR/evaluation/checkpoint-300"
 ```
 
-This evaluator is an interface requirement, not an existing executable. Prompt-scope
+This evaluator is an interface requirement, not an existing executable. Run the
+base without `--adapter`. The current PickScore training request uses the immediate
+rewrite, so it cannot establish preservation of the root user's intent. Prompt-scope
 grouping may improve root-prompt alignment; that direction is a hypothesis, not an
 invariant. Rewrite-conditioned reward and root-conditioned evaluation must be shown
 separately.
@@ -613,7 +839,16 @@ quality.
 
 ## 11. E5: abstraction, transport, publication, and topology
 
-The minimum topology evidence is executable without the new transport harness.
+E5 has two minimum slices: E5-R isolates representation, and E5-T compares deployment.
+For E5-R, use one recorded E4 payload on the same device and transport with
+`representation=tree` versus `flat_id_join`. The flat reference must reconstruct
+the exact IDs, groups, rewards/advantages, versions, and replay inputs verified in
+E4a. Match tensor bytes, dtype, number of roots/children, and operations; measure
+driver RSS, metadata bytes, transfer volume, and critical-path time, then express
+overhead as a fraction of the same recorded model-work interval. An internal
+topology comparison alone cannot isolate IR overhead.
+
+The minimum E5-T topology evidence is executable without the new transport harness.
 Reuse E3's colocated UniRL row as T0, then run T1 with the same total eight GPUs
 and effective work but separate four-GPU training and rollout slabs:
 
@@ -645,12 +880,13 @@ a pure communication ablation: training DP, residency, and publication path chan
 together, so the paper must show the phase breakdown and may not attribute the
 entire difference to `layout` alone.
 
-The existing `experiments/trajectory_ir/run_cpu_evidence.py` is only a local
+The paper repository's `experiments/trajectory_ir/run_cpu_evidence.py` is only a local
 regression. There is no checked-in end-to-end GPU transport harness at the audited
 commit. Before E5, implement and review a harness with a stable CLI such as:
 
 ```bash
 python experiments/trajectory_ir/run_gpu_transport_evidence.py \
+  --representation <tree|flat_id_join> \
   --backend <colocate_store|gpu_store|transfer_queue> \
   --placement <same_gpu|cross_gpu|cross_node> \
   --roots 8,32,128 --branch-factor 1,4,8 \
@@ -659,6 +895,8 @@ python experiments/trajectory_ir/run_gpu_transport_evidence.py \
 ```
 
 This command is a required interface specification, not an existing executable.
+Implement the new GPU harness in the UniRL source checkout or a separately pinned
+artifact package; archive its location/commit and run it from that root.
 The harness must report structure-operation time separately from materialization,
 reference metadata bytes, dense bytes avoided at the driver, driver/worker peak
 RSS and GPU memory, transfer latency/bandwidth, and end-to-end correctness hashes.
@@ -695,7 +933,7 @@ full 800-rollout budget and seeds 11/22/33:
 |---|---|---:|---:|---:|---|
 | S0 | sync/colocated | n/a | 1 | 0 | total-resource reference |
 | D0 | async/disaggregated | 1 | 1 | 0 | same-topology no-overlap control |
-| A1 | async/disaggregated | 2 | 1 | 1 | isolate onset of overlap |
+| A1 | async/disaggregated | 2 | 1 | 1 | onset of allowed overlap |
 | A2 | async/disaggregated | 2 | 1 | 2 | isolate lag allowance |
 | A3 | async/disaggregated | 2 | 2 | 2 | isolate publication cadence |
 | A4 | async/disaggregated | 2 | 2 | 4 | aggressive but bounded point |
@@ -755,6 +993,17 @@ invariants fail, Codex/engineer fixes the scheduler or instrumentation. If
 invariants pass and no asynchronous point Pareto-improves on its relevant control,
 keep the negative result and state the useful operating region is absent for this
 workload/allocation.
+
+Before the formal E6 grid, register `quality_target=<Q_TARGET>` for MATH-500 avg@4
+using only a separate pilot (never the final S0 curves), plus the fixed evaluation
+cadence. Use the same checkpoint evaluation protocol and common seed 42 for all
+points. Report first observed checkpoint crossing and its preceding evaluation
+time as an interval; a run that never reaches the target is right-censored, not
+assigned its final duration as a crossing time. Pair quality with actual driver
+elapsed time including initialization, publication, barriers, eval and checkpoint;
+report evaluator cost and startup separately as well. Existing `perf/step_time_s`
+cannot supply this clock. D0/A1 vary concurrency and permitted lag together;
+their contrast measures the onset of allowed overlap, not either knob alone.
 
 ## 13. Failure ownership and stopping rules
 

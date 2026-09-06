@@ -35,14 +35,24 @@ A result may enter the paper only when all applicable gates pass:
    archived bundle by a committed parser. Hand-copied dashboard values are not
    admissible.
 
+E0 applies at the actual caller boundaries. At the pinned commit, the `Sample`
+constructor checks parent adjacency but not equal concat depth, uniform contiguous
+reward blocks, or general shared-field equality. Generic concat retains the first
+shared value; the async assembler separately checks behavior versions. Validate
+those preconditions and compare with an ID-joined reference before real runs.
+Data/sampling seed fields do not alone control worker model/LoRA initialization:
+audit and seed every stochastic component before construction, preserve identical
+trainable initialization across replicas, and document RNG restoration on resume.
+Record any residual scheduling nondeterminism without claiming bitwise reproduction.
+
 ## 2. Experiment-to-claim matrix
 
 | ID | Priority | Controlled study | Claim tested | Manuscript output |
 |---|---:|---|---|---|
 | E0 | P0 gate | Environment, semantic parity, rollout/replay, publication, checkpoint/resume, and instrumentation | Later numbers are interpretable and regenerable | Evaluation preflight and correctness appendix |
 | E1 | P0 | Qwen3-4B-Base + DAPO-Math textbook GRPO, seeds 11/22/33 | Credible AR learning through the common trajectory path | RQ1 AR row and learning curves |
-| E2 | P0 | SD3.5-Medium + aligned FlowGRPO, seeds 11/22/33 | Credible diffusion learning without independent-quality/diversity collapse | RQ1 diffusion row and learning curves |
-| E3 | P0 | UniRL versus pinned VeRL-Omni on one 8-GPU SD3.5 node | End-to-end systems efficiency under matched work | RQ2 table and phase breakdown |
+| E2 | P0 | SD3.5-Medium + full-budget UniRL/VeRL-Omni reference, seeds 11/22/33 | Learning validity and related-recipe context; reproduction requires estimator parity | RQ1 diffusion row and learning curves |
+| E3 | P0 | UniRL versus pinned VeRL-Omni on one 8-GPU SD3.5 node | Shape-matched native-recipe system cost; same-algorithm parity pending | RQ2 table and phase breakdown |
 | E4 | P0 | Frozen-Qwen rewrite -> SD3, original-prompt versus rewrite-local grouping | Lineage selects an executable cross-stage objective | RQ3 lineage/enablement result |
 | E5 | P0 minimum / P2 extensions | IR/transport costs plus a matched UniRL topology pair | Representation and execution cost | RQ3 table/scaling plot |
 | E6 | P1 | Matched sync/async Qwen3 sweep | Bounded staleness has a measurable useful region | RQ4 Pareto plot and table |
@@ -52,6 +62,9 @@ and E4 directly tests the paper's lineage thesis. The minimum E5 topology/cost s
 bounds the price of the design and is also required for paper completion. Complete
 primary E0-E5 before adding model families, objectives, E6, or broad scaling points;
 broader E5 backends/scaling are extensions.
+At least one full-budget E1/E2 reference must pass mathematical and effective-work
+parity before the paper claims reference-implementation reproduction. Omitting
+both references leaves that author-requested evidence obligation open.
 
 ## 3. Source-derived measurement readiness
 
@@ -59,7 +72,7 @@ The current code already emits some—but not all—metrics required by the pape
 
 | Evidence | Current executable source | Readiness / action |
 |---|---|---|
-| End-to-end step time | `UniRLWandBLogger.log_rollout_step` → `perf/step_time_s` | Ready when structured logging is enabled. |
+| Complete driver elapsed time | `perf/step_time_s` is logged inside the train batch, before outer async publication/eval/save | **Partial, not end-to-end.** Add monotonic driver events covering initialization, whole iterations, publication, evaluation, and checkpoints; never sum overlapping phase times. |
 | Coarse phase time | `install_phase_timing` wraps wake, generate, sleep, weight sync, reward, and `train_track` | Partial. Split credit, replay/anchor, backward, optimizer, publication barrier, and checkpoint time before RQ2. |
 | Reward/length/group diagnostics | `compute_rollout_sample_metrics` | Ready; archive all `rollout/*` series. |
 | GPU peak allocated/reserved memory | `MemoryMonitor` → `perf/*` memory keys | Ready; verify enabled for every role and archive role/rank maxima. |
@@ -124,7 +137,7 @@ excluded sample or step.
 
 **Pinned starting recipe:** `examples/ar/qwen3_grpo_4b_base_dapo_sglang.yaml`.
 The executable fields specify Qwen3-4B-Base, DAPO-Math JSONL input, 64 prompts x
-8 samples = 512 trajectories per rollout, maximum 8192 new tokens, textbook GRPO
+8 samples = 512 trajectories per rollout, maximum 8192 new tokens, GRPO population-standard-deviation
 normalization, symmetric clip 0.2, `seq-mean-token-mean`, four optimizer updates
 per rollout, a 10,240-token microplanner, AdamW lr 1e-6/weight decay 0.01, full
 weight publication every rollout, and periodic AIME evaluation. The prespecified
@@ -141,7 +154,9 @@ Required run set:
 - A reference run with aligned data order, prompt/chat template, verifier, group size,
   sampling, token budget, effective batch, GRPO normalization, clipping, optimizer,
   update count, and evaluation decoding.
-- Frozen checkpoint evaluations at a prespecified cadence plus final/best checkpoints.
+- Frozen checkpoint evaluations at the prespecified cadence; final checkpoint is primary.
+- Internal AIME is validation: an AIME-selected best checkpoint is not independent AIME test evidence. Use final MATH-500 avg@4 as primary, fixed-budget AIME curves as secondary, and audit normalized prompt/problem overlap before interpretation. `avg@k` means mean accuracy, not pass@k.
+- Separate training and evaluation RNG: fix evaluation seed 42, archive actual server chat template/token IDs and reasoning/content handling, and complete per-request RNG/resume auditing in E0.
 
 External evaluation is driven by executable `benchmarks/core/registry.py`:
 
@@ -170,7 +185,7 @@ Primary paper outputs:
 - mean and 95% confidence interval over independent seeds;
 - failure/retry and checkpoint-selection rules fixed before examining the final curves.
 
-The expected signal is improvement over the base on independent MATH-500/AIME
+The expected signal is improvement over the base on the primary external MATH-500
 evaluation across most seeds without collapse in response length, truncation,
 within-group variance, ratio, or clip diagnostics. This is a hypothesis, not a
 filled result. Reward improvement without external-evaluation improvement is
@@ -188,36 +203,47 @@ formal setting uses SD3.5-Medium, 48 prompts x 16 images = 768 images/rollout,
 half, eta 0.8, guidance 1, distinct initial noise, PickScore, LoRA rank 32/alpha 64
 on eight attention projections, two optimizer updates, microbatch 8, lr and weight
 decay 1e-4, clip 1e-5, publication every rollout, 300 rollouts, one 8-GPU node,
-and seeds 11/22/33. Freeze all values in the resolved manifest rather than citing
+and seeds 11/22/33. Center advantages by prompt group and divide by batch-wide
+reward std. Freeze all values in the resolved manifest rather than citing
 defaults indirectly.
 
 Required run set:
 
 - base checkpoint;
 - at least three UniRL seeds;
-- aligned reference seeds or a clearly separated published-reference comparison;
+- 300-step VeRL-Omni reference runs with seeds 11/22/33, saves every 50 steps, and the same frozen evaluator; verify native-checkpoint export first (handoff Section 8.3);
+- stock flow/CPS, sparse-index/window, normalization and anchor differences mean this is currently a related-recipe reference, not a same-estimator reproduction;
 - the same prompts, resolution, denoising/sampling schedule, initial-noise policy,
   SDE indices, reward revision, LoRA targets, optimizer work, and evaluator.
 
 External evaluation should include:
 
-- `image/geneval` or `image/geneval2` for compositional behavior;
-- `image/preference`, reporting HPSv3 and ImageReward separately from the PickScore
-  training reward (the registry's PickScore view is not independent evidence);
+- `image/geneval2` for the explicitly named **UniRL synthetic compositional set / Qwen3-VL Soft-TIFA-style score**. This registry key is not evidence of official GenEval2 data/scorer parity;
+- `image/preference`, using final PartiPrompts HPSv3 as the primary endpoint, with ImageReward as a complementary frozen judge. These automatic judges are distinct from optimized PickScore, not independent human evaluations;
 - within-prompt mean pairwise LPIPS with AlexNet features over a fixed 16-image
   seed set per prompt as the diversity guard.
 
-Use identical evaluation prompts and image seeds for the base and every checkpoint.
-Report prompt-level paired LPIPS changes and a 95% bootstrap interval. A greater than
-10% relative decrease from the base is preregistered as material diversity loss;
-LPIPS is a collapse guard, not a perceptual-quality score. Implement and smoke-test
-the metric before formal training. Unknown final scores, model snapshot hashes, GPU
-identity, and evaluator hashes remain blank.
+Use evaluation seed 42 across all training seeds/checkpoints, explicit unique output
+tags, 512x512, 40 steps, guidance 1. The synthetic endpoint additionally uses its
+registered linear sigma grid, prompt-hashed seeds and encoder length 256; preference
+uses the pinned pipeline scheduler and index-based seeds. Record full resolved
+settings, data/scorer revisions and prompt overlap; `summary.json` alone omits
+settings and may average only successful scores. Require complete scoring or
+explicit missingness analysis, and never reuse tags after changing inputs.
+
+For LPIPS, generate 16 images per PartiPrompts prompt separately from the one-image
+preference endpoint; use RGB [-1,1], frozen AlexNet LPIPS, all 120 pairs per prompt,
+and then equal prompt means. Report relative change of mean diversity, with a
+paired prompt bootstrap (10,000 resamples, RNG 20260905). A >10% drop is a
+study-specific investigation trigger, not a literature-derived quality threshold.
+If the base is near zero, report absolute change and flag the relative criterion
+undefined. Implement and smoke-test the generator/metric before formal E2.
+Unknown scores, allocation facts, and model/data/evaluator hashes remain blank.
 
 Archive every generated image, prompt/sample index, seed, checkpoint, reward output,
 and evaluator error. Reward improvement alone is not sufficient evidence.
 
-The expected signal is higher PickScore without material collapse in GenEval2,
+The expected signal is higher PickScore without material collapse in synthetic composition,
 independent PartiPrompts preference views, or the preregistered diversity guard.
 If reward rises while the guards fall, report reward overfitting. If rollout/replay
 or LoRA publication checks fail, fix correctness and create a new run ID. If the
@@ -226,7 +252,7 @@ to a researcher.
 
 ## 6. RQ2 — End-to-end systems performance
 
-### 6.1 SD3.5 + FlowGRPO aligned pair (E3)
+### 6.1 SD3.5 shape-matched native-recipe pair (E3)
 
 Pinned executable launchers:
 
@@ -246,15 +272,20 @@ Two comparison rows are required:
 1. **backend-aligned:** SDPA-class attention on both sides;
 2. **best valid:** each system's best disclosed supported backend.
 
-Known inherent differences must be measured and disclosed rather than normalized
-away: the engine/version stack, engine-emitted versus recomputed old log-probability,
-and the exact SDE kernel implementation. Do not subtract a phase from only one
-system's end-to-end result.
+The stock pair is not algorithm-equivalent: UniRL uses `FlowSDEStrategy` with
+three sampled indices among early steps; VeRL-Omni requests CPS and a three-step
+window. Transition means/variances and likelihoods can differ, not just kernels.
+Audit exact SDE indices, anchor, advantage normalization, effective replay work,
+and reward-device placement. Count all reward GPUs. Until a new mathematical-parity
+pair passes, label these shape-matched native-recipe rows; SDPA alignment alone
+cannot justify framework-overhead or same-algorithm superiority claims.
+Do not subtract a phase from only one system's end-to-end result.
 
 Use three process-level repetitions per configuration. Each repetition runs 30
 steps; exactly the first five timing observations are warm-up, leaving at least 20
 steady-state observations. Run one system at a time on the same reserved 8-GPU
-node. The exact GPU, CPU, interconnect, driver, and cache state remain blank until
+node, randomizing framework order within each repetition block. The exact GPU,
+CPU, interconnect, driver, and cache state remain blank until
 the allocation manifest is captured.
 
 The expected result is competitive or better UniRL throughput with a phase breakdown
@@ -281,7 +312,7 @@ row rather than substituting a nearby workload.
   measured iterations, median, mean, p90, and failure-inclusive sensitivity.
 - End-to-end seconds/iteration, samples/s, generated tokens or pixels/s,
   and samples/GPU-hour. The 30-step E3 protocol does not produce time-to-quality;
-  that metric belongs to E6 unless a separate full-budget baseline study is registered.
+  E2-R supplies full-budget quality context and E6 supplies the prespecified threshold study.
 - Coarse phases already available plus the finer instrumentation TODOs in Section 3.
 - Per-role/rank GPU memory, CPU RSS, GPU utilization and power, idle fraction, and
   wake/sleep/publication/barrier cost.
@@ -303,21 +334,46 @@ rollout, with only the diffusion side trained. Compare
 an original prompt; the latter normalizes eight images within each rewrite. Invalid
 or deliberately corrupted lineage belongs in E0 tests, not the quality baseline.
 
+Fix E4 independently of E2: 512x512, ten steps, one SDE index among 0--8,
+eta 0.7, LoRA 16/32, lr 3e-4, weight decay 0, clip 1e-4, replay anchor, two
+updates, microbatch one, 300 rollouts, saves every 50, seeds 11/22/33 per scope.
+E4a first requires equality of groups, advantages, and replay inputs on identical
+recorded payloads against an explicit flat-row ID join. E4b then studies learning
+under 32-image versus 8-image normalization groups; any quality difference is an
+objective effect, not a causal measure of IR superiority.
+
+Verify no AR optimizer and unchanged AR parameter hashes. Evaluate base and all
+50-rollout diffusion checkpoints on held-out PickScore test roots after overlap
+audit, using a cached common set of four rewrites per root and eight image seeds
+per rewrite. Fix evaluation at 512x512, 40 steps, guidance 1, seed 42. PE adapters
+live at `checkpoint-<rollout>/diffusion`. The stock default `eval_interval=0` does
+not create these images: the required generation/scoring harness is specified in
+the handoff and is not yet implemented. Score against both root and rewrite;
+aggregate images, rewrites, then roots, and bootstrap roots separately from
+training-seed uncertainty. Training trajectory dumps are not held-out evaluation.
+
 Archive root/part/parent IDs, stage/model identity, decoded-value hashes, output
 versions, reward components, group membership, propagated credit, and replay-segment
-metadata. Real trajectory dumping and deterministic trainside-AR seed plumbing are
-instrumentation prerequisites. The current PickScore request is conditioned on each
+metadata. Worker/LoRA initialization, deterministic trainside-AR sampling,
+real trace dumping and held-out checkpoint generation are E0 prerequisites. The current PickScore request is conditioned on each
 rewrite, so an original-intent claim requires a separate evaluation join that scores
 each generated image against its root prompt. Report rewrite-conditioned training
-reward alongside root-prompt GenEval2 where applicable and HPSv3/ImageReward views
+reward alongside held-out root-prompt HPSv3/ImageReward views
 that are distinct from PickScore. If both groupings are correct but root-prompt
 quality is equal or worse, narrow the claim to semantic expressiveness and integration
 rather than discarding the result.
 
 ### 7.2 Representation, transport, and topology cost (E5)
 
-The checked-in CPU artifact is a regression test only. The GPU study must separately
-measure:
+The checked-in CPU artifact is a regression test only.
+
+The required E5-R paired slice uses the same recorded E4 tensors, device,
+transport and operations for tree versus `flat_id_join`, with exact E4a semantics.
+Record metadata/driver memory/transfer/critical-path costs and their fraction of
+the same model-work interval. E5-T below measures deployment instead. Broad
+transport backends and cross-node scaling are extensions after these two slices.
+
+The wider measurement inventory is:
 
 - tree split/concat/select and flat-row handoff at matched payloads;
 - reference metadata bytes, driver RSS, dense bytes avoided, and materialization
@@ -325,7 +381,7 @@ measure:
 - same-GPU, cross-GPU, and cross-node transfer latency/bandwidth for
   `colocate_store`, `gpu_store`, and `transfer_queue` where supported;
 - end-to-end topology/transport ablations with identical model work;
-- held-out model/workflow integration effort and reused versus changed modules.
+- an inventory of modules reused by E4; a held-out integration-effort study is an optional extension, not established by the existing workflow.
 
 Mooncake/TransferQueue results require explicit protocol, NIC/RDMA topology, queue
 configuration, and failure handling. Omit the row if the hardware cannot support a
@@ -405,8 +461,13 @@ For every step archive:
   roots/prompts;
 - reward/external evaluation versus optimizer update and wall time.
 
-The headline plot is a time-to-quality versus realized-lag Pareto frontier. A
-throughput gain without matched quality/time-to-quality is not sufficient.
+The plot is a time-to-quality versus realized-lag Pareto frontier. Before the formal
+grid, fix MATH-500 avg@4 target `<Q_TARGET>` using only a separate pilot and archive
+the cadence. Report the first observed crossing and bracket by adjacent checkpoint
+evaluation times; non-crossing runs are right-censored. The full driver clock must
+include initialization, publication, barriers, evaluation and checkpoint costs.
+The old `perf/step_time_s` cannot supply that clock. D0/A1 changes permitted lag
+and concurrency together: it tests allowed overlap, not either knob in isolation.
 
 Interpret S0 versus D0 as an allocation/residency comparison and D0 versus A1 as
 the onset-of-overlap comparison; do not attribute S0--A1 differences solely to
@@ -418,6 +479,12 @@ negative result and conclude that this workload/allocation has no demonstrated u
 async region.
 
 ## 9. Failure ownership and paper fill-in checklist
+
+Statistics use training seeds and process repetitions as independent units. Report
+all seeds/repetitions, means and 95% t intervals; pooled timing steps show within-run
+variation and are not independent replicate counts for a speed-ratio CI. Primary
+endpoints are final MATH-500 for E1 and final PartiPrompts HPSv3 for E2. Secondary
+metrics remain visible even when they disagree; no post hoc endpoint switching.
 
 Codex/engineering work may correct paths, dependencies, Hydra mistakes, parity
 reports, logging/parsers, deterministic divisibility, smoke-only OOM geometry,
