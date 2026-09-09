@@ -3,6 +3,10 @@
 Manuscript: **UniRL: Trajectory-Centric Post-Training Across Heterogeneous
 Generative Models**.
 
+
+
+
+
 This is the paper/Overleaf repository, not the training-code repository.
 Overleaf's root document is `main.tex`; keep the TMLR style, bibliography and
 relative figure/table inputs together. `main.pdf` is the reviewed local build.
