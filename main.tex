@@ -65,7 +65,7 @@ Rollout engines implement one transformation, $\sample\!\rightarrow\!\sample$, w
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
 This manuscript derives the design from UniRL commit \texttt{f5d7104} and specifies a claim-aligned evaluation covering training reproducibility, end-to-end throughput, phase cost, scaling, memory, transport, and policy lag.
 A source-importing CPU harness already exercises ten core IR invariants and records preliminary container-operation costs; the multi-seed training and aligned GPU systems results remain open.
-\paperTODO{Add artifact-backed headline findings only after the primary E1--E5 evidence in Section~\ref{sec:evaluation} is complete; mention E6 only if its controlled sweep supports a bounded-staleness conclusion.}
+\paperTODO{Headline findings still to be written. Available now: E2's diffusion training-validity row at three seeds, E3's $1.73\times$ end-to-end result with its parameter-matched $1.70\times$, E4's semantic control passing 24/24 with its grouping comparison a null, and E5-T's topology cost. Not available: the E1 AR row (no data), the E2-R reference comparison, E5-R, and the E6 grid --- whose pilot produced a null rather than a bounded-staleness conclusion, so E6 should not be mentioned in the abstract on present evidence.}
 \end{abstract}
 
 \section{Introduction}
@@ -559,12 +559,24 @@ This guard diagnoses collapse and is not itself a perceptual-quality metric.
 \toprule
 ID & Workload / external endpoint & Base & Reference/control & UniRL & Seeds \\
 \midrule
-E1 & Qwen3-4B-Base GRPO; MATH-500/AIME & -- & -- & -- & 3 \\
-E2 & SD3.5-M FlowGRPO; preference/composition/diversity & -- & -- & -- & 3 \\
+E1 & Qwen3-4B-Base GRPO; MATH-500/AIME & \multicolumn{3}{c}{\emph{not run --- no formal rollout completed}} & 0 \\
+\midrule
+\multicolumn{6}{@{}l}{E2 --- SD3.5-M FlowGRPO, 1{,}632 prompts at $K{=}16$, 26{,}112 images per preference row, 19/19 rows scored, 0 errors} \\
+E2a & HPSv3, held-out preference (primary endpoint) & 1.2024 & -- & \textbf{9.8126} & 3 \\
+E2b & ImageReward, held-out preference & -- & -- & $\Delta\,{+}1.3932$ & 3 \\
+E2c & PickScore, the optimized objective & -- & -- & $\Delta\,{+}0.0970$ & 3 \\
+E2d & Composition, synthetic compositional (vqascore) & 0.1011 & -- & \textbf{0.1552} & 3 \\
+E2e & Diversity, within-prompt LPIPS guard & -- & -- & $\Delta\,{-}24.79\%$ & 3 \\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
-\paperTODO{Populate with mean, uncertainty, exact checkpoint revisions, and released run IDs.}
+The UniRL column gives the endpoint level where a base level is recorded, and a change ($\Delta$) where only the paired difference is; the two are not interchangeable and are marked rather than mixed.
+Per-seed values, the statistical unit being the seed: HPSv3 gain $8.579/8.713/8.538$, mean $+8.6102$, 95\% $t$ interval $[8.383,\,8.837]$; composition $+54.5/+50.4/+55.5\%$, mean $+53.5\%$, $[46.8,\,60.1]$; diversity $-23.95/-25.19/-25.22\%$, mean $-24.79\%$, $[-26.59,\,-22.99]$.
+At three seeds the $t$ interval carries $2$ degrees of freedom and is wide by construction; the per-seed values, not the interval, are the reportable evidence.
+\emph{The diversity guard fired on all three seeds}, and the narrowing is already present at rollout 50 ($-15.69/-14.08/-12.91\%$), so truncating the budget does not avoid it.
+PickScore, the optimized objective, rises monotonically at all six checkpoints while both frozen judges flatten after checkpoint 150.
+\par\vspace{1mm}
+\paperTODO{Still open: the E2-R VeRL-Omni reference column --- three seeds are trained and their exports audited (15/15 consecutive pairs, native $=$ export bit-identical), but no held-out evaluation was run because the estimator mismatch between the stacks is unresolved. Also outstanding: exact checkpoint revisions and released run IDs. The E1 row is absent rather than pending.}
 \end{table}
 
 \subsection{RQ2: What is end-to-end system performance?}
@@ -596,14 +608,23 @@ The 30-step E3 protocol does not support a time-to-quality claim; E2's long-run 
 \toprule
 System & Configuration & s/iter & samples/s & samples/GPU-h & peak GiB \\
 \midrule
-UniRL & Native flow / SDPA-class & -- & -- & -- & -- \\
-VeRL-Omni & Native CPS / SDPA & -- & -- & -- & -- \\
-UniRL & preregistered best valid & -- & -- & -- & -- \\
-VeRL-Omni & FA3 best valid & -- & -- & -- & -- \\
+UniRL & Native flow / SDPA-class & \textbf{64.22} & 11.96 & \textbf{5381} & 75.4 \\
+VeRL-Omni & Native CPS / SDPA & 111.33 & 6.90 & 3104 & 28.4 \\
+UniRL & preregistered best valid & 64.22 & 11.96 & 5381 & 75.4 \\
+VeRL-Omni & FA3 best valid & 112.26 & 6.84 & 3079 & 28.4 \\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
-\paperTODO{Run on identical hardware, disclose inherent stack-version differences, and include failed/retried iterations.}
+Median seconds per iteration, aggregated as the median of three replicate medians, after removing the first five timing observations and retaining at least 20 per replicate.
+Replicate spread: UniRL $0.76$\,s ($1.18\%$), SDPA $1.11$\,s ($0.99\%$), FA3 $1.99$\,s ($1.78\%$).
+\textbf{UniRL is $1.73\times$ faster than the SDPA row and $1.75\times$ faster than FA3}; the two VeRL-Omni rows are statistically indistinguishable, so \emph{FA3 versus SDPA is a null}.
+UniRL's preregistered best valid backend is its SDPA-class configuration, so those rows coincide.
+\par\vspace{1mm}
+Two qualifications belong with the headline rather than below it.
+\emph{The median is the reported unit because the mean is not stable on one arm}: the VeRL-Omni arm takes a $>3\sigma$ upward excursion roughly once per run (worst retained step $119.76$\,s, $\approx 1.08\times$ its median) and the UniRL arm never does, with mean $\approx$ median throughout --- so a reader preferring means would see a \emph{larger} UniRL advantage.
+\emph{The pair is not parameter-matched}: bare versus prefix-qualified LoRA targets give 243 against 191 modules ($23.9$M versus $18.8$M, $1.27\times$), and the parameter-matched ratio is $1.70\times$, which is the conservative figure.
+\par\vspace{1mm}
+\paperTODO{Still open: strong and weak scaling, deferred by design until the single-node pair closed; and the per-phase breakdown panel. Peak GiB is the maximum across the three replicates of each configuration. Failed and retried iterations are accounted for in the archived per-step series.}
 \end{table}
 
 \subsection{RQ3: What does the trajectory abstraction cost and enable?}
@@ -627,6 +648,18 @@ Evaluation generates held-out images at $512\times512$, 40 steps, and guidance 1
 Worker/adapter RNG initialization, deterministic trainside-AR sampling, real trace dumping, and this held-out generation/evaluation path are E0 prerequisites for a multi-seed E4 result.
 If the two correct groupings tie, the experiment still establishes semantic expressiveness but not a quality benefit.
 
+\paragraph{E4 result: the semantic control passes, the quality comparison is a null.}
+The ID-joined flat-row reference reproduces UniRL's group memberships, advantages, and learner inputs for both keys, \textbf{24/24 checks in both scopes} --- including root-shard split$\rightarrow$concat and roots shuffled and reconstructed by ID, with the float32 reduction bit-exact against the ID join.
+\emph{This is the result that establishes retained ancestry selects a real optimization grouping}, and it stands independently of what follows.
+The 300-rollout, three-seed training comparison between root-scope and rewrite-scope grouping is a \textbf{null}: the seeds disagree in sign.
+A paired bootstrap over 64 roots on a single seed gave root-conditioned HPSv3 $+0.387$ $[+0.085,\,+0.706]$, which three seeds do not sustain; the binding constraint is seed count rather than rewrite quality.
+Consistent with the prespecified interpretation, this negative result is retained rather than repaired by hyperparameter search.
+
+One disclosure is required for the measured arm to be interpretable: at the audited commit the frozen rewriter has \emph{no} \texttt{pe} block, so both frozen-LLM variants drop \texttt{pe\_instruction}/\texttt{pe\_marker} and raw chat replies become SD3 conditioning.
+Of 256 rewrites, 71\% carry chat markers, 73\% exceed CLIP's 77-token window, and 0 contain the marker.
+The correction was written but deliberately not applied, so the measured rows remain attributable to a single configuration.
+Because the grouping comparison is a null, this is a property of the arm that was measured rather than a defect that changed a reported effect.
+
 We then measure recursive IR operations and tensor transport separately from model compute.
 Microbenchmarks vary root count, branch factor, number and size of tensor leaves, ragged token/media lengths, and part depth.
 They report split/concat/select latency, reference metadata bytes, dense bytes avoided at the driver, same-GPU and cross-GPU transfer time, cross-node time when available, and correctness hashes after reassembly.
@@ -638,8 +671,16 @@ This paired representation slice holds model work, device placement, values, gro
 Semantic errors are caught in E0 and are never timed as valid work.
 
 The minimum topology slice reuses E3's colocated SD3.5 UniRL row and adds the same work with \codepath{sd3\_vllmomni\_lora\_separate.yaml}: four GPUs train and four generate while the total eight-GPU allocation remains fixed.
+
 This pair measures two deployment regimes, not a pure transport primitive---training parallelism, residency, and local versus remote LoRA publication change together and are reported in the phase breakdown.
 Broader same-/cross-GPU and cross-node backend measurements remain E5 extensions.
+
+\paragraph{E5-T result: separating the slabs costs $2.277\times$ per iteration.}
+Three replicates, all exiting zero, with 54/54 archived checksums verifying.
+Colocated T0 is $64.223$\,s per iteration ($63.526/64.223/64.284$ across replicates, spread $0.758$\,s or $1.18\%$, 5{,}381 samples/GPU-hour); the separate $4{+}4$ topology T1 is $146.244$\,s on the same eight GPUs at the same effective work.
+\emph{Consistent with the preceding paragraph, the ratio may not be attributed to \texttt{layout} alone} --- the per-phase breakdown is the deliverable and the multiplier is a summary of it.
+The sentence to lead with is narrower and more informative: \textbf{under separate topology UniRL is slower than VeRL-Omni colocated} ($146.244$\,s against $111.33$\,s), so the allocation/residency cost of splitting the slabs exceeds the framework gap it was measured against.
+\emph{E5-R is not reported: the checked-in harness does not measure the paired representation slice described above}, and whether to build a corrected harness or narrow RQ3 to the topology result is an open decision rather than pending work.
 We inventory which bundle/stage/adapter code the existing E4 path uses and which trainer, scheduler, transport, and credit modules it shares. This documents reuse; reduced integration effort would require a separate held-out implementation study.
 
 \paragraph{Preliminary executable evidence.}
@@ -703,6 +744,25 @@ A4 & async / disaggregated & 2 & 2 & 4 & Aggressive bounded point \\
 \end{tabularx}
 \end{table}
 
+\paragraph{Pilot result: no threshold was registered, and the budget is past its useful point.}
+The capacity pilot ran all six points at one seed with evaluation off, giving per-rollout rates of $82.34$ (S0), $103.07$ (D0), $56.48$ (A1), $55.19$ (A2), $33.47$ (A3) and $39.54$\,s (A4, pooled over two replicates).
+These are planning inputs, not results: one seed each, and A4 is the only pooled point.
+
+The separate \texttt{Q\_TARGET} pilot then \textbf{failed its own preregistered rule, so no threshold is registered}.
+Scoring D0 checkpoints offline on MATH-500 avg@4 gives $0.7980$ at rollout 150 (two independent scorings, $0.7960$ and $0.8000$) against $0.7730$ at rollout 300.
+The rule required rollout 300 to exceed rollout 150; it is \textbf{lower by $0.0250$}, a paired $t$ of $-2.66$ over 500 prompts ($p \approx 0.008$) and $1.68\times$ the evaluation-noise half-width registered in advance to judge it.
+The internal AIME evaluation agrees in direction on a different benchmark, sampler and dataset ($0.0927 \rightarrow 0.0802$).
+\emph{Training reward rose $0.10 \rightarrow 0.43$ over the same span while held-out accuracy fell}, which is reward overfitting; at one point and two checkpoints the evidence carries a direction rather than a located turning point, so the supported claim is that held-out quality turns over somewhere between rollouts 150 and 300.
+The same shape appears on the diffusion side, where PickScore rises monotonically while both frozen judges flatten (Section~\ref{sec:rq1}).
+
+Consequently \emph{no time-to-quality figure is reported for this pilot}: $\Delta T = \epsilon / Q'(t)$ requires a positive quality-per-second, and $Q'$ is negative on this segment, so the conversion is undefined rather than large.
+
+\paragraph{The evaluation-noise floor, and a limit it places on every checkpoint comparison.}
+Two independent scorings of the \emph{same} checkpoint differ by $0.40$ aggregate accuracy points, but \textbf{agree on only 380 of 500 prompts}: 120 prompts changed between 1 and 4 of their 4 samples.
+The paired standard error is $0.00759$, so $\pm 1.5$ accuracy points at 95\%.
+Plumbing checks pass --- identical prompt identifier set, exactly four completions per prompt in both runs --- so this is a floor rather than an invalidation, and \texttt{-{}-random-seed} does not pin per-request sampling.
+\textbf{It follows that no per-prompt, per-subset or per-difficulty claim from a single scoring is reliable}; aggregate stability here comes from averaging, not from sampling repeatability.
+
 \paragraph{A controlled pair does not yet exist in the stock recipes.}
 At the audited commit, the nominal Qwen3 GRPO sync and async example files differ in five fields that affect either the estimator or learner execution (Table~\ref{tab:sync-async-preflight}).
 Consequently, measurements from those files without overrides are inadmissible as evidence about asynchrony.
@@ -746,7 +806,7 @@ Configuration, logging, parity, lineage, version, checkpoint, and replay/publica
 Changing the optimizer, reward, estimator, formal budget, model/task, evaluator, aligned-baseline definition, or central claim requires a research decision and a newly registered experiment.
 Stable negative results after correctness passes are retained; they are not repaired by silent hyperparameter search.
 
-\paperTODO{Add artifact-generated result panels for learning curves, phase breakdown, scaling and utilization, and the throughput--policy-lag Pareto frontier.}
+\paperTODO{The formal E6 grid has not run. Two items gate it: the six buffer counters above are unwritten, and \texttt{rejected} --- the mechanism bounded staleness acts through --- is constructed each step and never counted, which makes the async points inadmissible as specified. Separately, S0 cannot run: its evaluation path stalls in the reward dispatch, so the S0-vs-D0 allocation/residency contrast is deferred while D0-vs-A1 is unaffected. Result panels for learning curves, phase breakdown, scaling, utilization, and the throughput--policy-lag Pareto frontier follow the grid.}
 
 \subsection{Fairness and statistical protocol}
 
