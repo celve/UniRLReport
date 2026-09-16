@@ -65,7 +65,7 @@ Rollout engines implement one transformation, $\sample\!\rightarrow\!\sample$, w
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
 This manuscript derives the design from UniRL commit \texttt{f5d7104} and specifies a claim-aligned evaluation covering training reproducibility, end-to-end throughput, phase cost, scaling, memory, transport, and policy lag.
 A source-importing CPU harness already exercises ten core IR invariants and records preliminary container-operation costs; the multi-seed training and aligned GPU systems results remain open.
-\paperTODO{Headline findings still to be written. Available now: E2's diffusion training-validity row at three seeds, E3's $1.73\times$ end-to-end result with its parameter-matched $1.70\times$, E4's semantic control passing 24/24 with its grouping comparison a null, and E5-T's topology cost. Not available: the E1 AR row (no data), the E2-R reference comparison, E5-R, and the E6 grid --- whose pilot produced a null rather than a bounded-staleness conclusion, so E6 should not be mentioned in the abstract on present evidence.}
+\paperTODO{Headline findings still to be written. Available now: E2's diffusion training-validity row at three seeds, E3's $1.73\times$ end-to-end result with its parameter-matched $1.70\times$, E4's semantic control passing 24/24 with its grouping comparison a null, and E5-T's topology cost. Not yet available: the E1 AR row (running --- seed 11 at rollout 470 of 800, seeds 22 and 33 not started, so no seed has reached its prespecified endpoint), the E2-R reference comparison, E5-R, and the E6 grid --- whose pilot produced a null rather than a bounded-staleness conclusion, so E6 should not be mentioned in the abstract on present evidence.}
 \end{abstract}
 
 \section{Introduction}
@@ -559,7 +559,7 @@ This guard diagnoses collapse and is not itself a perceptual-quality metric.
 \toprule
 ID & Workload / external endpoint & Base & Reference/control & UniRL & Seeds \\
 \midrule
-E1 & Qwen3-4B-Base GRPO; MATH-500/AIME & \multicolumn{3}{c}{\emph{not run --- no formal rollout completed}} & 0 \\
+E1 & Qwen3-4B-Base GRPO; MATH-500/AIME & \multicolumn{3}{c}{\emph{in progress --- seed 11 at rollout 470/800; primary endpoint is the rollout-800 checkpoint}} & 0/3 \\
 \midrule
 \multicolumn{6}{@{}l}{E2 --- SD3.5-M FlowGRPO, 1{,}632 prompts at $K{=}16$, 26{,}112 images per preference row, 19/19 rows scored, 0 errors} \\
 E2a & HPSv3, held-out preference (primary endpoint) & 1.2024 & -- & \textbf{9.8126} & 3 \\
@@ -806,7 +806,7 @@ Configuration, logging, parity, lineage, version, checkpoint, and replay/publica
 Changing the optimizer, reward, estimator, formal budget, model/task, evaluator, aligned-baseline definition, or central claim requires a research decision and a newly registered experiment.
 Stable negative results after correctness passes are retained; they are not repaired by silent hyperparameter search.
 
-\paperTODO{The formal E6 grid has not run. Two items gate it: the six buffer counters above are unwritten, and \texttt{rejected} --- the mechanism bounded staleness acts through --- is constructed each step and never counted, which makes the async points inadmissible as specified. Separately, S0 cannot run: its evaluation path stalls in the reward dispatch, so the S0-vs-D0 allocation/residency contrast is deferred while D0-vs-A1 is unaffected. Result panels for learning curves, phase breakdown, scaling, utilization, and the throughput--policy-lag Pareto frontier follow the grid.}
+\paperTODO{The formal E6 grid has not run. Two items gate it: the six buffer counters above are unwritten, and \texttt{rejected} --- the mechanism bounded staleness acts through --- is constructed each step and never counted, which makes the async points inadmissible as specified. The evaluation-path stall that previously prevented S0 from running was diagnosed and fixed upstream, and the fix is validated at 32 devices, so the S0-vs-D0 allocation/residency contrast is no longer deferred; its runs have not been made. Result panels for learning curves, phase breakdown, scaling, utilization, and the throughput--policy-lag Pareto frontier follow the grid.}
 
 \subsection{Fairness and statistical protocol}
 
