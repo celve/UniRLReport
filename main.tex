@@ -752,8 +752,10 @@ The separate \texttt{Q\_TARGET} pilot then \textbf{failed its own preregistered 
 Scoring D0 checkpoints offline on MATH-500 avg@4 gives $0.7980$ at rollout 150 (two independent scorings, $0.7960$ and $0.8000$) against $0.7730$ at rollout 300.
 The rule required rollout 300 to exceed rollout 150; it is \textbf{lower by $0.0250$}, a paired $t$ of $-2.66$ over 500 prompts ($p \approx 0.008$) and $1.68\times$ the evaluation-noise half-width registered in advance to judge it.
 The internal AIME evaluation agrees in direction on a different benchmark, sampler and dataset ($0.0927 \rightarrow 0.0802$).
-\emph{Training reward rose $0.10 \rightarrow 0.43$ over the same span while held-out accuracy fell}, which is reward overfitting; at one point and two checkpoints the evidence carries a direction rather than a located turning point, so the supported claim is that held-out quality turns over somewhere between rollouts 150 and 300.
-The same shape appears on the diffusion side, where PickScore rises monotonically while both frozen judges flatten (Section~\ref{sec:rq1}).
+\emph{The training reward falls over the same span rather than rising}: the archived per-step sink gives 25-rollout window means peaking at $0.4270$ over rollouts 126--150 and declining monotonically to $0.3413$ over 251--300, across the very interval on which held-out accuracy drops.
+\textbf{So this is not reward overfitting}: the optimized objective does not keep improving while the external metric falls --- the two decline together, and the turnover on both is near rollout 140.
+At one point and two checkpoints the evidence carries a direction rather than a located turning point, so the supported claim is that held-out quality turns over somewhere between rollouts 150 and 300.
+The diffusion side behaves differently, and the contrast is the finding rather than a caveat: there the optimized objective (PickScore) rises monotonically across all six checkpoints while both frozen judges flatten (Section~\ref{sec:rq1}), which is reward overfitting; on the autoregressive path the objective itself turns over.
 
 Consequently \emph{no time-to-quality figure is reported for this pilot}: $\Delta T = \epsilon / Q'(t)$ requires a positive quality-per-second, and $Q'$ is negative on this segment, so the conversion is undefined rather than large.
 
