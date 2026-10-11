@@ -148,7 +148,7 @@ Generation, reward evaluation, replay, gradient computation, and policy publicat
 Rollout may run inside the training process or in a dedicated serving engine with its own tensor-parallel layout, such as SGLang~\citep{zheng2024sglang} or the vLLM-based~\citep{kwon2023vllm} vLLM-Omni~\citep{yin2026vllmomni}, while a sharded training backend such as FSDP~\citep{zhao2023fsdp} or VeOmni~\citep{ma2025veomni} owns parameters and optimizer state.
 Reward ranges from an in-process scorer to an environment-isolated scorer process or a remote multi-model service.
 These roles must agree on when each copy of the policy is resident, offloaded, or published, and publishing from a sharded trainer is itself a collective over the whole training mesh.
-Which boundary dominates cost depends on the configuration: in the measured separate-slab deployment, the report attributes much of the slowdown to reward processing rather than weight or trajectory movement (Section~\ref{sec:rq3}).
+Which boundary dominates cost depends on the configuration: in the measured separate-slab deployment, the report attributes much of the slowdown to reward processing (Section~\ref{sec:rq3}).
 
 \paragraph{Topology heterogeneity.}
 A small run may time-share one GPU set between training and rollout; a larger run may separate them; a variable-duration rollout may benefit from asynchronous admission.
@@ -307,11 +307,11 @@ F_{\theta,e}: \mathcal{T}_{\mathrm{skeleton}} \longrightarrow \mathcal{T}_{\math
 \label{eq:engine}
 \end{equation}
 where $e$ identifies a train-side or external generation runtime.
-$F$ keeps the request's part sequence and identifiers and writes decoded values, conditions, and a replay segment into the shells it fills, and stamps its policy version on the frontier it returns; a coordinator that fills several shells with child engines copies each child's version onto the shell that child filled.
+$F$ keeps the request's part sequence and identifiers and writes decoded values, conditions, and a replay segment into the shells it fills, and stamps its policy version on the frontier it returns; when an engine or trainer fills several shells through child engines, it copies each child's version onto the shell that child filled.
 The base contract also exposes lifecycle and policy-publication operations, but it does not standardize the engine's internal serving API.
 
 \paragraph{One trajectory spans autoregressive and diffusion stages.}
-The skeleton records multi-stage generation in the trajectory itself rather than in a workflow-specific side structure.
+The filled skeleton records every stage of a multi-stage generation in the trajectory itself.
 Within a pipeline that fills several shells, a generated shell obtains its inputs from its ancestry: \texttt{conditioning\_at} walks each row's parent chain and collects the role-tagged primitives along it.
 In the HunyuanImage-3 and BAGEL text-to-text-and-image modes, one pipeline fills the AR shell from the root prompt; the image shell's lineage then surfaces both the original prompt and the generated reasoning as its conditioning, without a side table that pairs each image with the text that produced it.
 Each stage's replay state lands in its own layer---a \texttt{TextSegment} from an AR stage and a \texttt{LatentSegment} from a diffusion stage---so the filled tree carries what credit assignment and replay need for both stages (Section~\ref{sec:fold}).
@@ -872,7 +872,7 @@ HybridFlow/veRL combines single- and multi-controller execution and introduces h
 OpenRLHF uses Ray, vLLM, and DeepSpeed to schedule the models in an RLHF workflow~\citep{hu2024openrlhf}.
 ROLL emphasizes a single-controller abstraction, parallel workers, sample lifecycle scheduling, and flexible device mapping~\citep{wang2025roll}.
 NeMo-RL provides scalable training and generation backends and multimodal model support~\citep{nemorl2025}.
-Group-relative recipes in these systems~\citep{sheng2024hybridflow,hu2024openrlhf} typically record one level of sampling structure---responses grouped under their prompt by a per-prompt identifier or by contiguous sample order---whereas UniRL generalizes that group key to multi-level ancestry encoded in sample identifiers.
+Group-relative recipes in these systems~\citep{sheng2024hybridflow,hu2024openrlhf,wang2025roll,nemorl2025} typically record one level of sampling structure---responses grouped under their prompt by a per-prompt identifier or by contiguous sample order---whereas UniRL generalizes that group key to multi-level ancestry encoded in sample identifiers.
 UniRL shares their concern for composable orchestration; its intended distinction is the lineage- and modality-aware trajectory boundary across AR, diffusion, and cross-stage generation.
 That distinction must be established by RQ3 rather than a feature table.
 
