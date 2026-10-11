@@ -5,9 +5,9 @@ Last updated: 2026-09-05
 ## 0. Evidence boundary
 
 - **Code source of truth:** a clean sibling checkout at `../UniRL`
-- **Audited commit:** `f5d710406b215bb7a0b387fdd37e4d4778b92338`
-- **Commit date / subject:** 2026-08-20, `feat(async): dynamically dispatch prompt rollouts for AR and DiT (#289)`
-- The code worktree was clean and matched `origin/main` when this plan was created.
+- **Audited commit:** `fd344ad6036a0ba7be9900a9d0cf78ebf59fa738` (release tag `v0.2.0` of `Tencent-Hunyuan/UniRL`)
+- **Commit date / subject:** 2026-10-08, `docs(readme): announce the v0.2.0 release in News (#572)`
+- Re-pinned on 2026-10-11 from the earlier audit commit `f5d710406b215bb7a0b387fdd37e4d4778b92338` (2026-08-20), which is an ancestor of `v0.2.0` (89 commits earlier).
 - Repository README files, documentation prose, and existing architecture images were **not** used as design evidence. They may be used only to locate code. Claims below cite executable source, configs, or required experiment artifacts.
 - No checked-in raw training logs currently substantiate the performance numbers written in `benchmarks/speed_benchmarks/verl_omni/README.md`. Those numbers therefore do **not** enter the paper until logs, configs, environment manifests, and parser outputs are archived and independently checked.
 - The GPU-cluster evidence protocol is specified in `EXPERIMENT_RUNBOOK.md`; the execution order, exact launch/evaluation templates, expected signals, anomaly ownership, stopping rules, and paper destinations are in `GPU_HANDOFF_README.md`. The author has explicitly deferred GPU execution to suitable hardware; this draft does not treat the absence of a local GPU as evidence.
@@ -42,12 +42,12 @@ This is a systems thesis, not a claim that every algorithm is mathematically uni
 | C6 | **The system reproduces credible training behavior for representative AR and diffusion workloads.** | Algorithms and entry paths exist, but code presence is not empirical evidence. Candidate paths: `unirl/train_ar.py`, `unirl/train_diffusion.py`; GRPO/PPO/GSPO and FlowGRPO/FlowDPPO/DiffusionNFT implementations; benchmark loaders under `benchmarks/`. | Multi-seed learning curves, final benchmark metrics, base-model and reference-implementation comparisons, seed CIs, exact checkpoints/data/rewards, and released raw logs. Minimum matrix in §6.1. |
 | C7 | **UniRL has competitive end-to-end efficiency under fair, disclosed comparisons.** | Timing and memory instrumentation exist in `unirl/utils/{profiling,memory_monitor,wandb_logger}.py`; aligned launcher scripts exist under `benchmarks/speed_benchmarks/verl_omni/`, but there are no checked-in raw logs. | Re-run and archive all primary artifacts. E3 reports median, p90, samples/s, samples/GPU-hour, phase breakdown, and memory for a 30-step shape-matched native-recipe comparison. Flow/CPS transitions and sparse/window steps are mathematical differences, so strict framework-overhead attribution requires a new semantically aligned pair. It does not report time-to-quality unless a separate full-budget baseline-training protocol is preregistered; E6 owns time-to-quality within UniRL. |
 
-### Evidence acquired on 2026-08-30
+### Evidence acquired on 2026-10-11
 
-- Run `cpu_f5d7104_macos_arm64` directly imported a clean UniRL checkout at the audited commit under Python 3.12.14, PyTorch 2.11.0, Ray 2.55.1, NumPy 2.5.2, and Pillow 12.3.0.
+- Run `cpu_fd344ad_macos_arm64` directly imported a clean clone of `Tencent-Hunyuan/UniRL` at the audited `v0.2.0` commit under Python 3.12.13, PyTorch 2.11.0, Ray 2.55.1, NumPy 2.5.2, and Pillow 12.3.0 on an Apple M5 Pro. It supersedes run `cpu_f5d7104_macos_arm64` (2026-08-30, Python 3.12.14, earlier audit commit), whose bundle is kept for provenance.
 - Ten fail-fast checks passed: a mixed AR–observation–diffusion lineage; exact tree split/concat; whole-tree selection/slicing; mean reward propagation and group advantages; malformed-lineage, wrong-modality, and wrong-batch rejection; ragged packed-text round trips; and lazy `TensorRef` selection/materialization/bounds.
 - A one-thread CPU microbenchmark recorded all 100 raw trials after ten warm-ups for 8/32/128 roots and six IR operations. This is preliminary RQ3 regression evidence only—not rollout, learner, transport, GPU, training-quality, or end-to-end evidence.
-- Reproduction code: `experiments/trajectory_ir/run_cpu_evidence.py`. Evidence bundle: `artifacts/trajectory_ir/cpu_f5d7104_macos_arm64/`, including manifest, structured correctness results, raw trials, captured stdout/stderr, CSV/TeX summaries, report, and SHA-256 checksums.
+- Reproduction code: `experiments/trajectory_ir/run_cpu_evidence.py`. Evidence bundle: `artifacts/trajectory_ir/cpu_fd344ad_macos_arm64/`, including manifest, structured correctness results, raw trials, captured stdout/stderr, CSV/TeX summaries, report, and SHA-256 checksums.
 - C1 is partially exercised with a synthetic mixed-modality lineage, but still requires real AR, diffusion-SDE, and cross-stage rollout traces plus a controlled ID-joined comparison; held-out integration is an optional extension. C3 now has local selection/materialization and tree-reassembly evidence, but still requires byte/memory measurements and same-GPU, cross-GPU, and cross-node transport experiments.
 
 ## 3. Section and subsection questions
