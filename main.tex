@@ -108,7 +108,7 @@ Version-aware bounded staleness is one realization of the execution contracts (S
 The evaluation (Section~\ref{sec:evaluation}) proceeds from structural correctness, through learning and a composed workflow, to measured system cost.
 Lineage-defined grouping matches an ID-joined reference on synthetic fixtures and on recorded rollouts of a composed rewrite-to-image run, in which both groupings train and no quality advantage is established for either.
 Diffusion training improves held-out automatic scores with a material diversity regression, and the prespecified autoregressive recipe does not improve on its base model at the registered endpoint.
-In reported timings, \system iterates faster than VeRL-Omni under native recipes that retain estimator and trainable-parameter differences, and it has higher output-token throughput than veRL in one recipe-matched run per framework; its measured separate deployment is substantially slower than the colocated one.
+\system iterates faster than VeRL-Omni in reported timings under native recipes that retain estimator and trainable-parameter differences, and it has higher output-token throughput than veRL in one recipe-matched run per framework; its measured separate deployment is substantially slower than the colocated one.
 These observations do not establish a cross-workload or time-to-quality advantage or complete the trajectory-centric claim: replay-level semantic validation on recorded payloads and a paired measurement of representation cost remain necessary.
 
 \section{Problem: Preserve Semantics While Changing Execution}
@@ -485,8 +485,8 @@ E0, the correctness gate, is reported in Appendix~\ref{app:correctness}.
 \paragraph{Evidence sources.}
 The results have two sources of different strength.
 E0, E1, E2, and E4 are generated from data exported from the runs: per-prompt endpoint scores, per-rollout training metrics, per-checkpoint judge aggregates, the registered E4 analysis output, and parity rows; E3-AR is likewise backed by released per-step records.
-Two E4 statements are exceptions: the synthetic check count is transcribed from the earlier report, and the recorded-rollout check rests on the experiment's execution record.
 E3, E5-T, and E6 are transcribed from an earlier summary report whose run records were unavailable to us, so for these we show the reported aggregates only and reconstruct no learning curves or uncertainty bars.
+Two E4 statements also fall outside the first source: the synthetic check count is transcribed from that report, and the recorded-rollout check rests on the experiment's execution record.
 The reproducibility statement identifies the bundles and, where they are recorded, the commits and runs behind each source; Appendix~\ref{app:protocol} gives the prespecified protocol.
 
 \begin{table}[H]
@@ -517,7 +517,7 @@ Table~\ref{tab:workloads} lists the workloads.
 The autoregressive workloads use Qwen3-4B-Base~\citep{yang2025qwen3} on DAPO-Math-17k~\citep{yu2025dapo}, and E2, E3, and E5-T use SD3.5-Medium~\citep{sd35medium2024}.
 
 \begin{table}[H]
-\caption{Workloads. Settings are those of the prespecified protocol; matching each to a resolved run configuration remains an artifact-release obligation. A rollout batch is prompts $\times$ samples per prompt, and Appendix~\ref{app:protocol} gives the complete recipes.}
+\caption{Workloads. Settings are those of the prespecified protocol, except the added DRPO run, the E3-AR row, and the H20 allocations, which describe what was run; matching each prespecified setting to a resolved run configuration remains an artifact-release obligation. A rollout batch is prompts $\times$ samples per prompt, and Appendix~\ref{app:protocol} gives the complete recipes.}
 \label{tab:workloads}
 \centering
 \scriptsize
@@ -833,7 +833,7 @@ Fault isolation is limited by the shared Ray runtime and role lifecycle; the sys
 \paragraph{The empirical case is incomplete.}
 The GPU evidence supports qualified observations about diffusion scores and diversity, early autoregressive learning followed by degradation under the prespecified recipe, correct lineage grouping in a composed run, native-recipe iteration time, deployment sensitivity, and one recipe-matched AR throughput comparison.
 It leaves five things unestablished.
-The first is reference reproduction: no mathematically aligned reference has been evaluated on common quality endpoints, because E2-R was trained but not evaluated and the adapted launcher of E3-AR lacks the aligned external quality endpoint.
+The first is reference reproduction: no mathematically aligned reference has been evaluated on common quality endpoints, because E2-R was trained under a different estimator and not evaluated, and the adapted launcher of E3-AR lacks the aligned external quality endpoint.
 The second is autoregressive improvement at the registered endpoint: the prespecified recipe ends below its base model, and the degradation is unexplained, because no reference was run on that recipe and one DRPO seed cannot separate the objective from the rest of its recipe.
 The third is a quality advantage from lineage grouping: validation on recorded rollouts covers group membership and advantages, not replay tensors, and the corrected cross-stage comparison is inconclusive at three seed pairs.
 The fourth is bounded IR overhead, together with scaling; neither is measured.
@@ -862,7 +862,7 @@ and immutable run-directory contract are specified in
 agent is in \texttt{GPU\_HANDOFF\_README.md}. Both documents intentionally contain
 no results.
 The current result audit is in \codepath{EXPERIMENT\_RESULTS.md}, which also lists unresolved source discrepancies for the report-derived values.
-The experiments ran at later commits than the audited one, and the design-audit commit is not a substitute for them: the 2026-09-30 and 2026-10-08 bundles record theirs, and the 2026-09-22 bundle records none.
+The experiments ran at later commits than the audited one, and the design-audit commit is not a substitute for them: the 2026-09-30 and 2026-10-08 bundles record theirs, and the 2026-09-22 bundle records no \system commit for E3, E5-T, or E6.
 The dated bundle \codepath{artifacts/reported\_results/2026-09-22/} stores compact source snapshots, source-level caveats, reported numerical inputs, and the tables and figures that a deterministic generator renders from them, for E3, E5-T, and E6.
 Its values combine an online experiment report, retrieved on 2026-09-27 with an as-of date of 2026-09-22, with the result manuscript in pull request~2 of this repository at commit \texttt{ecce5097}; the VeRL-Omni reference of E3 is commit \texttt{01c87ee5}.
 These reproduce the transcription and presentation of the reports, not the original GPU measurements: the underlying per-run repositories were unavailable during that integration, so their source identities, complete timing distributions, and admission gates have not been independently revalidated here.
