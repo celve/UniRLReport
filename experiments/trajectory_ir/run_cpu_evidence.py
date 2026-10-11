@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 
-PINNED_COMMIT = "f5d710406b215bb7a0b387fdd37e4d4778b92338"
-RUN_ID = "cpu_f5d7104_macos_arm64"
+PINNED_COMMIT = "fd344ad6036a0ba7be9900a9d0cf78ebf59fa738"
+RUN_ID = "cpu_fd344ad_macos_arm64"
 ROOT_COUNTS = (8, 32, 128)
 AR_BRANCH = 4
 DIFFUSION_BRANCH = 2

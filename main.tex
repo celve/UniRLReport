@@ -63,9 +63,9 @@ Reinforcement-learning systems share an outer loop---generate, score, assign cre
 We present \system, a trajectory-centric system that places a lineage-preserving, modality-aware intermediate representation at the boundary between post-training semantics and distributed execution.
 A trajectory batch is a sequence of typed layers, one per depth of a forest of prompt-rooted trees, carrying decoded values, model conditions, replay segments, rewards, and behavior-policy versions.
 A rollout request is a skeleton of such layers whose generated layers are still empty shells, and every engine fills them through one $\sample\!\rightarrow\!\sample$ transformation.
-The same trajectory can carry autoregressive and diffusion stages linked by lineage, while logical roles, placement, tensor transport, weight publication, and phase residency determine how the fill executes.
+The same trajectory can carry autoregressive and diffusion stages linked by lineage, while logical roles, placement, tensor transport, weight publication, and role residency determine how the fill executes.
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
-The design is grounded in a source audit of UniRL commit \texttt{f5d7104}; subsequent experiment reports provide initial GPU evidence.
+The design is grounded in a source audit of UniRL release v0.2.0 (commit \texttt{fd344ad}); subsequent experiment reports provide initial GPU evidence.
 Three-seed diffusion results show improved held-out automatic scores together with reduced within-prompt diversity, while an eight-GPU native-recipe comparison reports lower iteration time than VeRL-Omni.
 A separate, single-run, recipe-matched 500-step Qwen3-4B DRPO comparison records 12.3\% higher end-to-end output-token throughput for UniRL than veRL while generating 6.3\% longer responses.
 A source-importing CPU harness exercises ten core IR invariants.
@@ -145,7 +145,7 @@ This example motivates explicit ancestry, while the image model's replay state m
 
 \paragraph{Role heterogeneity.}
 Generation, reward evaluation, replay, gradient computation, and policy publication differ in runtime, parallel layout, and lifecycle, not only in kernels.
-Rollout may run inside the training process or in a dedicated serving engine with its own tensor-parallel layout, such as SGLang~\citep{zheng2024sglang} or the vLLM-based~\citep{kwon2023vllm} vLLM-Omni~\citep{yin2026vllmomni}, while a sharded training backend such as FSDP~\citep{zhao2023fsdp} or VeOmni~\citep{ma2025veomni} owns parameters and optimizer state.
+Rollout may run inside the training process or in a dedicated serving engine with its own tensor-parallel layout, such as SGLang~\citep{zheng2024sglang}, vLLM~\citep{kwon2023vllm}, or vLLM-Omni~\citep{yin2026vllmomni}, while a sharded training backend such as FSDP~\citep{zhao2023fsdp} or VeOmni~\citep{ma2025veomni} owns parameters and optimizer state.
 Reward ranges from an in-process scorer to an environment-isolated scorer process or a remote multi-model service.
 These roles must agree on when each copy of the policy is resident, offloaded, or published, and publishing from a sharded trainer is itself a collective over the whole training mesh.
 Which boundary dominates cost depends on the configuration: in the measured separate-slab deployment, the report attributes much of the slowdown to reward processing (Section~\ref{sec:rq3}).
@@ -191,7 +191,7 @@ The central type is
 P_i = (I_i, X_i, C_i, Z_i, R_i, A_i, V_i, M_i),
 \label{eq:sample}
 \end{equation}
-where $I_i$ are sample identifiers, $X_i$ decoded modality values, $C_i$ model conditions, $Z_i$ optimization segments, $R_i$ rewards, $A_i$ advantages or returns, $V_i$ a behavior-policy version, and $M_i$ auxiliary metadata.
+where $I_i$ are sample identifiers, $X_i$ decoded modality values, $C_i$ model conditions, $Z_i$ optimization segments, $R_i$ rewards, $A_i$ advantages or returns, $V_i$ the generating engine's policy version (behavior-version provenance only on the asynchronous paths; Section~\ref{sec:lifecycle}), and $M_i$ auxiliary metadata.
 In code, $\mathcal{T}$ is a \sample{} and each $P_i$ is a batched \parttype{}, rather than a single tree node.
 The sequence encodes a forest of root-prompt trees: $P_i$ holds every node at depth $i$, and edges connect adjacent layers.
 We call the last layer the \emph{frontier}; trajectories grow by appending layers to it.
@@ -282,12 +282,13 @@ After reward logging, trainers may drop large decoded media while retaining cond
 
 \subsection{A field algebra defines structural batching}
 
-Every structured batch field declares a composition rule: concatenated, packed variable-length, shared, or reduced by maximum, minimum, sum, or mean.
-These annotations drive concat, split, selection, repetition, and device movement recursively.
-They also define how a distributed method reconstructs its return value.
-For example, a DP-scattered rollout receives a tree-complete shard and returns parts that are merged position-wise; a broadcast lifecycle method returns one replicated control result.
+Every structured batch field carries a kind: concatenated, packed variable-length, or shared (the default for an unannotated field); scalar reductions by maximum, minimum, sum, or mean are also available but are applied only when concatenating, and the current source uses only the maximum, for timing metadata.
+Concatenation, row selection, slicing, and repetition act recursively on concatenated and packed fields and pass shared fields through unchanged; device movement applies to every tensor regardless of kind.
+The same kinds define how a distributed method reconstructs its return value.
+For example, a DP-scattered \sample{} is split by root groups (the root count must be divisible by the data-parallel size), and the data-parallel heads' results are concatenated position-wise; another argument whose leading size differs from the split size is replicated to every shard rather than rejected.
+A broadcast lifecycle method returns the list of per-worker results, and callers that expect a replicated value check agreement explicitly.
 
-This is a stronger contract than requiring each role to hand-author tensor slicing.
+This removes hand-authored tensor slicing from each role; merging shards relies on the well-formed-batch properties above.
 It also creates a measurable cost: recursive structural operations and reference bookkeeping must be benchmarked in Section~\ref{sec:rq3} rather than assumed free.
 
 \subsection{Rollout unfolds a declared trajectory tree}
@@ -324,9 +325,9 @@ The current trainers instantiate single-stage AR, single-stage diffusion, input-
 \paragraph{Engine forms.}
 The current source contains three direct forms of Equation~\ref{eq:engine} and one coordinator that composes it.
 The train-side adapter invokes the model pipeline directly under evaluation mode, filling every generated shell of the request.
-Dedicated serving adapters for SGLang, SGLang-diffusion, vLLM-Omni, and FastVideo translate typed trajectory inputs to their native requests and rebuild typed responses.
+Dedicated serving adapters for SGLang, SGLang-Diffusion, vLLM, vLLM-Omni, and FastVideo translate typed trajectory inputs to their native requests and rebuild typed responses.
 A composed engine serially fills the AR and diffusion shells of Equation~\ref{eq:skeleton} with two child engines.
-An agentic harness composes Equation~\ref{eq:engine} over turns: it forks a policy turn, has a named engine fill it, and appends the environment observation before the next turn.
+An agentic harness composes Equation~\ref{eq:engine} over turns: it forks a policy turn, has a named engine fill it, and appends the environment observation before the next turn, returning a longer part sequence.
 The claim is therefore about a common boundary, not one universal generation kernel.
 
 \subsection{Training folds the tree into per-stage updates}
@@ -354,9 +355,10 @@ An algorithm object owns the stage-specific map
 (C,Z,A;\theta) \longmapsto \mathcal{L}\quad\text{and backward}.
 \label{eq:algorithm}
 \end{equation}
+The loss itself sees only its layer's conditions, segment, and advantages; an optional per-shard preparation hook may read the layer's whole part (for example, per-row metadata or critic values), and some algorithms additionally hold a backend handle for reference or EMA weights.
 Before repeated optimizer updates, the stack can freeze an old-policy anchor at the same microbatch geometry used for training.
 AR objectives replay token log probabilities; diffusion objectives replay selected transitions and may compare rollout statistics, a pre-update replay, or a reference model.
-Supervised and forward-process objectives explicitly opt out of advantages.
+Supervised and teacher-distillation objectives explicitly opt out of advantages; the forward-process DiffusionNFT objective still consumes group advantages.
 
 Because models and algorithms meet only at this data boundary, they compose without pairwise adaptation.
 A model is integrated once, as a bundle whose stages fill and replay typed segments; an algorithm is written once, as a loss over a stage's replay of those segments.
@@ -386,7 +388,7 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \node[role] (data) {Data source};
 \node[role,right=8mm of data] (rollout) {Rollout engine\\fill skeleton\\$\sample\!\rightarrow\!\sample$};
 \node[role,right=8mm of rollout] (reward) {Reward\\score and attach};
-\node[role,right=8mm of reward] (credit) {Credit\\group or GAE};
+\node[role,right=8mm of reward] (credit) {Credit\\group (driver) or\\GAE (train stack)};
 \node[role,right=8mm of credit] (train) {Algorithm +\\TrainStack};
 \draw[arr] (data) -- (rollout);
 \draw[arr] (rollout) -- (reward);
@@ -406,7 +408,7 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \node[mech,right=8mm of dispatch] (transport) {Tensor references\\selectable transport};
 \node[mech,right=8mm of transport] (lifecycle) {Weight publication\\residency lifecycle};
 
-\node[topo,below=7mm of dispatch,xshift=-22mm] (coloc) {Colocated / phase-shared};
+\node[topo,below=7mm of dispatch,xshift=-22mm] (coloc) {Colocated / role residency};
 \node[topo,right=8mm of coloc] (separate) {Separate GPU slabs};
 \node[topo,right=8mm of separate] (async) {Bounded-staleness async};
 \draw[-{Latex[length=2mm]},draw=gray!70] (place.south) -- (coloc.north);
@@ -420,13 +422,13 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \subsection{Logical roles, device slabs, and worker slots}
 
 A \texttt{DevicePool} creates one Ray worker per GPU initially and reserves one strict-packed placement group per node.
-A placement scope selects a fraction of currently available devices.
-Roles created inside a scope either share its worker slot---enabling local sibling access and memory time-sharing---or receive isolated slots on the same devices.
+A top-level placement scope claims a fraction of the whole device pool from the still-unclaimed devices; a nested scope takes a fraction of its parent's devices.
+Roles created inside a scope either share its worker slot---enabling local sibling access and memory time-sharing---or receive isolated slots on the same devices (isolated slots require the per-GPU store transport).
 Disjoint top-level scopes form separate training, rollout, or reward slabs.
 
 A role is a regular Python object derived from \texttt{Remote}.
 The handle constructs one role replica on each selected worker and derives data-, tensor-, pipeline-, sequence-, and expert-parallel rank metadata from the role configuration.
-Method decorators state argument dispatch and return collection.
+Method decorators declare a dispatch mode (broadcast, scatter, or data-parallel scatter) and which ranks execute; the dispatch mode determines how results are collected.
 The trainer is consequently a single-controller program, while each method may invoke multi-controller distributed training or serving inside a role.
 This resembles HybridFlow's separation between orchestration and distributed computation~\citep{sheng2024hybridflow}; UniRL's paper claim centers instead on carrying the same typed lineage through heterogeneous generative stages.
 
@@ -435,7 +437,7 @@ This resembles HybridFlow's separation between orchestration and distributed com
 Before an RPC, dense tensor leaves may be \emph{dehydrated} into \texttt{TensorRef}s.
 A reference is an ordered list of half-open row spans over opaque handles, plus shape, dtype, and device metadata.
 Selection and contiguous slicing construct new span views without moving tensor data.
-At a destination, hydration resolves all referenced spans in a batch and reconstructs the original nested object.
+At a destination, hydration resolves all referenced spans in a batch and writes the tensors back into the nested object in place; spans whose trailing widths differ are zero-padded to a common width.
 
 The transport interface has a deliberately small contract: store tensors, resolve handles, identify references, and optionally localize references for destination workers.
 The audited source provides (i) a colocated per-worker store, (ii) a per-GPU store with IPC and NCCL transfers, and (iii) a TransferQueue path backed by simple storage or Mooncake-compatible storage.
@@ -444,25 +446,32 @@ Mooncake itself was proposed for disaggregated serving~\citep{qin2024mooncake}; 
 The driver can therefore manipulate trajectory structure and metadata without materializing all GPU tensors.
 Whether this reduces memory and transfer cost in practice is RQ3, not an assumption.
 
-\subsection{Phase lifecycles and policy publication}
+\subsection{Residency lifecycles and policy publication}
 \label{sec:lifecycle}
 
 Training and generation often hold different copies or formats of a policy.
-UniRL exposes their interaction as an ordered lifecycle:
+On a colocated slab, UniRL orders their interaction so that each role's weights leave the GPU before a role that needs the memory is brought up, and publication completes before generation.
+The AR trainer realizes this as an ordered lifecycle:
 \begin{enumerate}
   \item wake the rollout engine sufficiently to receive weights;
   \item publish parameters if the cadence requires it;
   \item optionally offload colocated training state;
-  \item generate and stamp the frontier with the engine's policy version;
-  \item sleep the engine when the selected residency policy requires it;
+  \item complete the wake and generate, stamping the frontier with the engine's policy version;
+  \item sleep the engine;
   \item restore training state before replay and optimization.
 \end{enumerate}
+The diffusion trainers instead express residency as one resident-or-parked choice per role (training, rollout, reward): they park every non-resident role before waking the engine, publish into the awake engine, sleep it after generation unless the rollout role is resident, and restore a parked trainer only before its optimizer step.
+The prompt-enhancement and unified-model trainers keep the AR-style single offload switch, and the prompt-enhancement trainer sleeps its engine after every rollout.
 
-The concrete order varies by engine capabilities.
-For example, staged wake can receive weights before mapping the rest of an AR engine, and a train-side engine reads live model objects without a separate publication role.
+The concrete order also varies by engine capabilities.
+For example, staged wake can receive weights before mapping the rest of an AR engine, the vLLM native-IPC path offloads optimizer state before publication and the model shard after it, and a train-side engine reads live model objects without a separate publication role.
 Separate slabs use an explicit one-time handshake.
-Weight-sync implementations cover LoRA tensor paths and several full-weight paths, including tensor serialization, CUDA IPC, NCCL, and checkpoint rendezvous.
+Weight-sync implementations cover in-process and cross-slab LoRA adapter pushes and full-weight paths via serialized tensors, CUDA IPC (ZMQ or vLLM's native weight-transfer engine), SGLang checkpoint-engine IPC, NCCL broadcast, and a checkpoint-file handoff.
 The base engine can also receive per-track updates for composed models.
+
+The stamped policy version is behavior-version provenance only on the asynchronous paths.
+The asynchronous and agentic trainers set it to the optimizer-update count at each publication.
+The synchronous trainers do not advance it, so their frontiers keep version zero, except that the direct vLLM engine stamps its native-IPC publication count.
 
 The source rejects combinations whose lifecycle has not been validated, such as a train-side rollout on a physically separate slab or selected EMA/offload combinations.
 This fail-closed policy is important because a partially awakened engine or silently stale adapter can produce plausible but invalid training data.
@@ -471,7 +480,7 @@ Section~\ref{sec:evaluation} therefore includes replay-consistency and failure-i
 \subsection{Synchronous execution}
 
 The synchronous AR trainer performs rollout, reward, credit assignment, replay/update, optional evaluation, and checkpointing in order.
-The diffusion trainer can accumulate multiple rollouts into one optimizer window and can place reward on the train slab or a third slab.
+The diffusion trainer can accumulate multiple rollouts into one optimizer window and can place reward on the train slab or a third slab, or score micro-batches inside the colocated rollout window so that reward overlaps generation.
 In both cases, topology affects resource ownership and residency but not the trajectory boundary.
 This makes a controlled topology experiment possible: hold model, prompts, group size, reward, number of replayed steps or tokens, and optimizer updates constant while changing only engine or placement.
 
@@ -484,12 +493,13 @@ A background dispatcher fills every engine slot up to a configured per-worker ca
 Completed trajectories are grouped by root; only complete groups enter the ready buffer.
 Every generated part must carry an output policy version $v_o$.
 
-Let $v_t$ be the current optimizer-update version and $u$ the number of optimizer updates performed per consumed rollout batch.
+Let $v_t$ be the current optimizer-update version, which counts committed optimizer steps, and $u$ the configured number of optimizer updates per consumed rollout batch.
 The manager exposes lag in update units,
 \begin{equation}
 \ell = v_t-v_o \leq u b,
 \end{equation}
-where $b$ is the configured staleness allowance in rollout-batch units; the filter rejects work beyond that budget.
+where $b$ is the staleness allowance in rollout-batch units (configurable for AR, fixed to the publication interval minus one for diffusion); the filter rejects work beyond that budget.
+Because a skipped non-finite step does not advance $v_t$, admitted work can be more than $b$ rollout batches old.
 Before publishing version $v_t$, it pauses admission, drains or suspends work, completes any started or batch-aligning prefix, checks that no publication splits a training batch across behavior versions, publishes weights, updates the rollout version, and then resubmits eligible pristine carry.
 Evaluation and checkpointing require a fully empty manager.
 
@@ -506,13 +516,14 @@ The following paths show which information crosses the common boundary and which
 
 An input part carries prompt text and metadata.
 Forking by group size creates generated shells with sibling IDs.
-An AR engine fills packed token segments and decoded text, a reward role attaches scalar or component rewards, and the part computes group-normalized credit or token-level generalized advantage estimates.
+An AR engine fills packed token segments and decoded text, and a reward role attaches scalar or component rewards.
+Group-normalized credit is computed on the driver before the batch is scattered; token-level generalized advantage estimates are instead computed per trajectory on the training workers, after the critic anchor is frozen.
 The train stack replays the same segment and applies the selected objective.
-Optional token-length balancing permutes complete samples before DP sharding, preserving sibling identifiers and precomputed credit.
+Optional token-length balancing permutes individual generated rows of the training layer after credit is attached; it keeps each row's identifier and advantage but abandons sibling contiguity, so no grouping operation may follow it.
 
 \subsection{Diffusion and flow generation}
 
-A diffusion request forks prompts and records sampling parameters, a sigma schedule, selected SDE indices, and an initial-noise recipe.
+A diffusion request forks prompts and records sampling parameters, selected SDE indices, and an initial-noise recipe; the hosting engine pins the sigma schedule onto the shell before generation.
 The engine returns decoded media plus a latent segment whose sparse trajectory fields are sufficient for the selected update.
 FlowGRPO-style objectives replay recorded steps and compare new transition log probabilities against a frozen rollout or replay anchor~\citep{liu2025flowgrpo}.
 Forward-process objectives such as DiffusionNFT use clean generated samples rather than the same reverse-trajectory likelihood path~\citep{zheng2025diffusionnft}.
@@ -523,8 +534,9 @@ The common train stack handles microbatching and optimizer state; the algorithm 
 In a prompt-enhancement path, one root produces one or more AR rewrites, and every rewrite produces one or more images (Equation~\ref{eq:skeleton}).
 The image reward is attached to the leaf; when the rewrite stage trains, parent-major reduction supplies its feedback.
 The primary E4 case freezes that stage and uses ancestry to select the diffusion advantage groups.
-In a tool-interacting path, the policy emits an action-like text part, the environment appends an observation part, and the process repeats until termination or suspension.
-Both workflows need ancestry to survive rollout scheduling and sharding; flattening them into unrelated rows would require rebuilding that correspondence out of band.
+The prompt-enhancement workflow needs this ancestry to survive rollout scheduling and sharding; flattening it into unrelated rows would require rebuilding that correspondence out of band.
+In a tool-interacting path, each trajectory is a single-branch chain: the policy emits an action-like text part, the environment appends an observation part, and the process repeats until termination or suspension.
+The agentic trainer keeps one \sample{} per trajectory, forms a group from repeated copies of the same root rather than forked siblings, computes group advantages over those trajectories, and trains on their flattened generated turns, so lineage there conditions each turn within a trajectory rather than defining groups or shards.
 
 E4 checks these groups against an explicit ID-based reference and then studies the two grouping objectives in training.
 
@@ -591,6 +603,7 @@ The data name does not imply use of the DAPO optimizer; we fix the population-st
 Each rollout contains 64 prompts with eight samples (512 trajectories), uses SGLang TP=1 with thinking enabled, temperature/top-$p$ 1.0, top-$k$ disabled, and at most 8192 new tokens.
 The learner uses group-standard-deviation normalization, symmetric clipping at 0.2, \texttt{seq-mean-token-mean} aggregation, four updates per rollout, a 10,240-token microplanner, AdamW learning rate $10^{-6}$ and weight decay 0.01, and full-weight publication every rollout.
 We prespecify 800 rollouts on 32 total GPUs, internal AIME evaluation every ten rollouts, full checkpoints every 200 rollouts, and seed IDs 11, 22, and 33 applied to data order and the SGLang server RNG.
+These seeds and the checkpoint cadence must be supplied as run-time overrides because they are not stock-recipe values (the stock data-source seed is 42); at the audited release a per-request SGLang sampling seed requires deterministic inference, so the server RNG must be seeded through engine arguments recorded in the resolved configuration.
 The planned external evaluation covers the frozen base and checkpoints 200/400/600/800 on MATH-500 (500 problems, avg@4) and AIME 2024/2025 (30 problems each, avg@16), using the registry's fixed decoding and \texttt{math\_verify} grader.
 The UniRL run and the selected current reference must align prompts, chat template, verifier, maximum generation length, group size, effective batch, clipping, KL treatment, optimizer updates, and evaluation decoding.
 The public veRL Qwen3 FSDP example is only a scaffold because its stock model variant, data, group size, response budget, and KL/objective settings differ.
@@ -609,7 +622,7 @@ Issue~1 records a historical evaluation hang; the later report attributes its re
 The older issue is therefore not evidence that E1 is still blocked before rollout zero.
 
 \paragraph{Diffusion workload.}
-E2 fixes SD3.5-Medium~\citep{sd35medium2024} and the UniRL FlowGRPO setting used by E3: 48 prompts with 16 images (768 samples) per rollout, $384\times384$ training resolution, ten denoising steps, three SDE steps in the first half, $\eta=0.8$, guidance 1, and distinct initial noise.
+E2 fixes SD3.5-Medium~\citep{sd35medium2024} and the UniRL FlowGRPO setting used by E3, i.e.\ the stock \codepath{sd3\_vllmomni.yaml} recipe with the overrides in \codepath{run\_unirl\_sd35\_aligned.sh}: 48 prompts with 16 images (768 samples) per rollout, $384\times384$ training resolution, ten denoising steps, three SDE steps in the first half, $\eta=0.8$, guidance 1, and distinct initial noise.
 PickScore~\citep{kirstain2023pickapic} supplies the training reward; advantages subtract each prompt-group mean and divide by the batch-wide reward standard deviation.
 LoRA rank/alpha is 32/64 on eight matched attention projections; the learner uses two updates, microbatch eight, learning rate and weight decay $10^{-4}$, clip $10^{-5}$, and publication every rollout.
 We prespecify 300 rollouts on one eight-GPU node with seed IDs 11, 22, and 33.
@@ -619,7 +632,7 @@ Frozen base and every 50-rollout checkpoint use a shared diffusers evaluation pi
 These are held-fixed automatic judges distinct from the optimized PickScore model, not independent human studies.
 
 \paragraph{Image evaluation identity.}
-The registry key \texttt{image/geneval2} points to UniRL's \texttt{synthetic/test.jsonl} and a local Qwen3-VL-8B Soft-TIFA-style scorer.
+The registry key \texttt{image/geneval2} points to UniRL's \texttt{synthetic/test.jsonl} and a Qwen3-VL-8B Soft-TIFA-style scorer, served by the reward service by default or run in-process with \texttt{--local-geneval2}.
 We name this the \emph{synthetic compositional set}; it is not an official GenEval~2 result~\citep{kamath2025geneval2} without a separate data-and-scorer parity audit.
 The prespecified image endpoints use $512\times512$, 40 steps, guidance 1, and an evaluation seed of 42 shared across training seeds and checkpoints.
 The later E2 report describes 16 images for each of 1,632 preference prompts, rather than the original one-image preference endpoint; the exact sampler and aggregation revision must be reconciled in the released protocol.
@@ -674,6 +687,7 @@ Systems are reported to run separately on the same reserved node; cache policy a
 We show the three distinct reported configurations, without duplicating UniRL as an additional ``best valid'' row.
 The stock UniRL recipe uses \texttt{FlowSDEStrategy} and three sampled early indices; the VeRL-Omni launcher requests \texttt{cps} and an early three-step window.
 These may change the transition distribution and likelihood, not merely kernel implementation. Normalization, anchors, actual replay work, and reward-service GPU placement also require an audit.
+At the audited release the stock SD3 recipes also enable update-membership shuffling (\texttt{shuffle\_updates}), which the reported runs predate; a rerun at v0.2.0 must either disable it or report it as a further difference.
 Until a semantically aligned pair is established, E3 is labeled a \emph{shape-matched native-recipe comparison}; attention-backend matching alone does not make it an equivalent-algorithm framework comparison.
 Its speed ratio cannot be attributed solely to framework overhead.
 
@@ -757,8 +771,9 @@ This experiment contains one process-level run per system and does not establish
 RQ3 first tests the semantic capability that motivates the IR, then measures its cost.
 E4 uses the executable frozen-Qwen3-0.6B rewrite $\rightarrow$ SD3.5 path: eight original prompts, four rewrites per prompt, and eight images per rewrite, or 256 image descendants per rollout; only diffusion trains.
 This is a separate recipe from E2: $512\times512$, ten steps, one sampled SDE index among 0--8, $\eta=0.7$, LoRA 16/32, learning rate $3\times10^{-4}$, weight decay zero, clip $10^{-4}$, replay anchor, two updates, and microbatch one.
-The primary condition computes group-relative advantages across all 32 descendants of one original prompt, while \texttt{diffusion\_group\_scope=rewrite} groups the eight images under each rewrite.
-Both conditions must serialize redacted root/part/parent IDs, shapes, reward/advantage, replay indices, group labels, and output versions.
+The primary condition (\texttt{diffusion\_group\_scope=prompt}) computes group-relative advantages across all 32 descendants of one original prompt, while \texttt{diffusion\_group\_scope=rewrite} (the trainer default) groups the eight images under each rewrite.
+The two stock prompt-enhancement recipes are not a matched pair: the prompt-group recipe uses eight images per rewrite and a 512-token rewrite limit, whereas the rewrite-scope recipe uses four and 256. Both arms must therefore use the prompt-group recipe with only the grouping key changed, as confirmed by their resolved configurations; both stock recipes also enable \texttt{shuffle\_updates} at the audited release.
+Both conditions must serialize redacted root/part/parent IDs, shapes, reward/advantage, replay indices, and group labels; the synchronous prompt-enhancement trainer does not advance output versions, so they carry no behavior-version provenance here.
 Invalid lineage remains an E0 fail-fast test rather than an intentionally corrupted quality baseline.
 
 For image $x_{p,j,k}$, the two group keys are $g_{\rm root}=p$ and $g_{\rm rewrite}=(p,j)$.
@@ -766,7 +781,7 @@ The intended semantic test requires an ID-joined flat-row reference to reproduce
 The 300-rollout, three-seed training comparison changes the normalization population (32 versus eight images); any quality difference would therefore concern the grouping objective, not isolate the IR representation's effect.
 
 Passing that recorded-trajectory control would establish the grouping semantics on real rollout data; it would not by itself prove better task quality.
-The current PickScore request is conditioned by the rewritten text, so a claim about preserving the user's original intent additionally requires lineage-keyed evaluation of every image against its root prompt.
+The current PickScore request is conditioned by the rewritten text (the default \texttt{prompt\_source: generation}; scoring against the root prompt with \texttt{prompt\_source: original} is available but was not used in E4), so a claim about preserving the user's original intent additionally requires lineage-keyed evaluation of every image against its root prompt.
 We therefore report both rewrite-conditioned training reward and frozen HPSv3/ImageReward evaluations joined to each root prompt.
 Evaluation generates held-out images at $512\times512$, 40 steps, and guidance 1 with the base and every 50-rollout diffusion checkpoint, using one fixed manifest of four frozen rewrites per root and eight image seeds per rewrite for both conditions.
 Worker/adapter RNG initialization, deterministic trainside-AR sampling, real trace dumping, and this held-out generation/evaluation path are E0 prerequisites for a multi-seed E4 result.
@@ -792,6 +807,7 @@ This paired representation slice holds model work, device placement, values, gro
 Semantic errors are caught in E0 and are never timed as valid work.
 
 The minimum topology slice reuses E3's colocated SD3.5 UniRL row and adds the same work with \codepath{sd3\_vllmomni\_lora\_separate.yaml}: four GPUs train and four generate while the total eight-GPU allocation remains fixed.
+That recipe carries the stock rather than the E3-aligned settings and the repository has no aligned launcher for it, so the E3 overrides must be applied and archived with the separate arm.
 This pair measures two deployment regimes, not a pure transport primitive---training parallelism, residency, and local versus remote LoRA publication change together and require a common phase breakdown before attributing their costs.
 Broader same-/cross-GPU and cross-node backend measurements remain E5 extensions.
 The reported E5-T times are \ReportedColocatedSeconds{} seconds for shared deployment and \ReportedSeparateSeconds{} seconds for the separate allocation, approximately \ReportedTopologySlowdown{} times longer (Figure~\ref{fig:reported-systems}).
@@ -802,7 +818,7 @@ We inventory which bundle/stage/adapter code the existing E4 path uses and which
 
 \paragraph{Preliminary executable evidence.}
 We ran a source-importing regression harness against a clean UniRL checkout at
-\texttt{f5d7104}; it does not mock the trajectory classes.
+\texttt{fd344ad}; it does not mock the trajectory classes.
 All ten checks passed: cross-stage lineage construction, exact tree split/concat,
 whole-tree select/slice, leaf-to-root reward propagation and group advantages,
 rejection of malformed lineage and primitive modality/batch violations, variable-length packed-text
@@ -814,12 +830,12 @@ two diffusion children per observation, and a four-value image payload per leaf.
 
 \begin{table}[H]
 \caption{Preliminary single-process CPU trajectory-IR timings (microseconds).
-Python 3.12.14 and PyTorch 2.11.0; one thread; ten warm-up and 100 measured repetitions.
+Python 3.12.13 and PyTorch 2.11.0; one thread; ten warm-up and 100 measured repetitions.
 These are regression measurements, not distributed or GPU throughput.}
 \label{tab:cpu-ir}
 \centering
 \scriptsize
-\input{artifacts/trajectory_ir/cpu_f5d7104_macos_arm64/summary_table.tex}
+\input{artifacts/trajectory_ir/cpu_fd344ad_macos_arm64/summary_table.tex}
 \end{table}
 
 The current \texttt{Sample.select} path forms tree-complete root shards before
@@ -829,7 +845,7 @@ while contiguous selection coalesces them; no dense tensor is copied until
 materialization. These observations motivate, but do not replace, the planned
 GPU transport and end-to-end ablations. The manifest, 100 per-cell raw trials,
 structured check outcomes, generated table rows, and SHA-256 checksums are archived
-under \codepath{artifacts/trajectory\_ir/cpu\_f5d7104\_macos\_arm64/}.
+under \codepath{artifacts/trajectory\_ir/cpu\_fd344ad\_macos\_arm64/}.
 
 \subsection{RQ4: Exploratory bounded-staleness observations}
 \label{sec:rq4}
@@ -933,8 +949,8 @@ Bounded staleness remains an exploratory operating-region question, with no demo
 
 \section*{Reproducibility statement}
 
-The source characterization in this draft refers to UniRL commit
-{\small\texttt{f5d710406b215bb7a0b387fdd37e4d4778b92338}} (2026-08-20).
+The source characterization in this draft refers to UniRL release v0.2.0, commit
+{\small\texttt{fd344ad6036a0ba7be9900a9d0cf78ebf59fa738}} (2026-10-08).
 The manuscript repository records the claim-to-evidence plan in \texttt{PAPER\_PLAN.md}.
 The cluster-ready execution protocol, configuration-parity gates, metric inventory,
 and immutable run-directory contract are specified in
@@ -945,6 +961,7 @@ The current result audit is in \codepath{EXPERIMENT\_RESULTS.md}.
 The dated bundle \codepath{artifacts/reported\_results/2026-09-22/} stores compact source snapshots, source-level caveats, reported numerical inputs, and generated tables and figures.
 These reproduce the transcription and presentation of the reports, not the original GPU measurements.
 The separately rerun AR systems bundle in \codepath{artifacts/reported\_results/2026-09-30-qwen3-4b-drpo/} pins UniRL commit \texttt{6148a5d}, the veRL reference and compatibility commits, both resolved recipes, W\&B run identities, 499 post-warmup records per framework, phase and band summaries, and the exporter and plotting script.
+Commit \texttt{6148a5d} is on a pre-release branch: it descends from an earlier audit commit but carries four rollout-performance and decoding commits that v0.2.0 does not contain, so E3-AR measures that branch rather than the audited release.
 Its UniRL run is \texttt{6jlpkjdr}; its veRL run is \texttt{xd9cv7e4}, with the final two completed veRL steps supplemented from the committed trainer-log excerpt because they were not flushed to W\&B during shutdown.
 All graphics are committed PDF assets included by relative paths, so Overleaf does not require Python or shell escape to build the manuscript.
 The preliminary RQ3 evidence is regenerated by
@@ -964,7 +981,7 @@ Table~\ref{tab:source-audit} records the executable source used to support mecha
 It does not prove performance or successful execution for every configuration.
 
 \begin{table}[H]
-\caption{Primary code evidence at commit \texttt{f5d7104}.}
+\caption{Primary code evidence at commit \texttt{fd344ad} (v0.2.0).}
 \label{tab:source-audit}
 \centering
 \scriptsize
@@ -974,13 +991,13 @@ Mechanism & Primary source symbols \\
 \midrule
 Trajectory IR & \codepath{unirl/types/sample.py}: \texttt{Part}, \texttt{Sample}; \codepath{unirl/types/primitives.py}; \codepath{unirl/types/segments/} \\
 Batch algebra & \codepath{unirl/distributed/tensor/batch.py}: \texttt{FieldKind}, \texttt{Batch} \\
-Tensor references & \codepath{unirl/distributed/tensor/ref.py}: \texttt{TensorSpan}, \texttt{TensorRef}; \codepath{transport.py}: \texttt{TensorTransport} \\
-Roles and placement & \codepath{unirl/distributed/group/device\_pool.py}, \codepath{placement.py}, \codepath{handle.py}, \codepath{dispatch.py} \\
-Rollout boundary & \codepath{unirl/rollout/engine/base.py}: \texttt{BaseRolloutEngine}; concrete engines under \codepath{unirl/rollout/engine/} \\
-Training boundary & \codepath{unirl/algorithms/base.py}: \texttt{StageAlgorithm}; \codepath{unirl/train/stack/base.py}: \texttt{TrainStack} \\
-Sync trainers & \codepath{unirl/trainer/ar.py}: \texttt{ARTrainer}; \codepath{unirl/trainer/diffusion.py}: \texttt{DiffusionTrainer} \\
-Async scheduler & \codepath{unirl/trainer/async\_rollout.py}; \codepath{unirl/rollout/manager/} \\
-Weight publication & \codepath{unirl/distributed/weight\_sync/}; engine-specific receivers under \codepath{unirl/rollout/engine/} \\
+Tensor references & \codepath{unirl/distributed/tensor/ref.py}: \texttt{TensorSpan}, \texttt{TensorRef}; \codepath{unirl/distributed/tensor/transport.py}: \texttt{TensorTransport} \\
+Roles and placement & \codepath{unirl/distributed/group/remote.py}: \texttt{Remote}; \codepath{device\_pool.py}, \codepath{placement.py}, \codepath{handle.py}, \codepath{dispatch.py} \\
+Rollout boundary & \codepath{unirl/rollout/engine/base.py}: \texttt{BaseRolloutEngine}; concrete engines under \codepath{unirl/rollout/engine/}, including \codepath{vllm/}; \codepath{unirl/reward/stack.py} for overlapped scoring \\
+Training boundary & \codepath{unirl/algorithms/base.py}: \texttt{StageAlgorithm}; \codepath{unirl/train/stack/base.py}: \texttt{TrainStack}; \codepath{anchor.py}, \codepath{planner/update.py} \\
+Sync trainers & \codepath{unirl/trainer/ar.py}: \texttt{ARTrainer}; \codepath{unirl/trainer/diffusion.py}: \texttt{DiffusionTrainer}; \codepath{pe.py}; \codepath{residency.py} \\
+Async and agentic & \codepath{unirl/trainer/async\_rollout.py}, \codepath{async\_ar.py}, \codepath{async\_diffusion.py}, \codepath{agentic.py}; \codepath{unirl/rollout/manager/} \\
+Weight publication & \codepath{unirl/distributed/weight\_sync/}, including \codepath{full/ckpt\_engine\_ipc.py}; engine-specific receivers under \codepath{unirl/rollout/engine/} \\
 Instrumentation & \codepath{unirl/utils/profiling.py}, \codepath{memory\_monitor.py}, \codepath{wandb\_logger.py} \\
 \bottomrule
 \end{tabularx}
@@ -1021,7 +1038,7 @@ The following system-level checks are the evidence requirements, not a claim tha
 \begin{enumerate}
   \item \textbf{Rollout--replay parity:} before the first update, compare engine-emitted and train-side replay log probabilities or transition statistics under stated numerical tolerances.
   \item \textbf{Publication parity:} repeat the parity check after each LoRA or full-weight publication path used in an experiment.
-  \item \textbf{Batch-version integrity:} verify that an optimizer batch never mixes behavior versions when the configured algorithm assumes one version.
+  \item \textbf{Batch-version integrity:} verify that an optimizer batch never mixes behavior versions when the configured algorithm assumes one version; this is meaningful only on the asynchronous and agentic paths, whose versions advance at publication.
   \item \textbf{Boundary integrity:} checkpoint and evaluation begin only after the async manager is empty; resume restores the optimizer version and republishes it before new rollout.
   \item \textbf{Work accounting:} compare generated tokens or pixels, denoising and replay steps, scored samples, and committed optimizer updates across systems.
   \item \textbf{Structural preconditions:} validate unique root IDs, equal part counts, parent-major grouping, shared-field equality, and version provenance before merging or propagating credit; check against an ID-joined reference.

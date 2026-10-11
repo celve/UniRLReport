@@ -1,0 +1,2 @@
+PASS: 10 correctness checks
+WROTE: /Users/michael/Code/Paper/UniRLReport/artifacts/trajectory_ir/cpu_fd344ad_macos_arm64
