@@ -67,8 +67,8 @@ Rollout engines implement one transformation, $\sample\!\rightarrow\!\sample$, w
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
 In GPU experiments, three-seed diffusion training improves held-out automatic scores while reducing within-prompt diversity, and the prespecified autoregressive GRPO recipe learns early and then ends below its base model in all three seeds, whereas a later DRPO run stays above it at one seed.
 In a composed rewrite-to-image run, two lineage-defined groupings match an ID-joined reference on recorded rollouts and both train, with no quality difference established between them.
-\system iterates faster than VeRL-Omni in an eight-GPU native-recipe comparison and, in a single recipe-matched 500-step Qwen3-4B DRPO run, delivers 12.3\% higher end-to-end output-token throughput than veRL.
-The cost of the representation itself and time-to-quality remain unmeasured.
+An eight-GPU native-recipe comparison reports lower iteration time than VeRL-Omni, and a single-run, recipe-matched 500-step Qwen3-4B DRPO comparison records 12.3\% higher end-to-end output-token throughput for \system than veRL.
+Replay-level lineage validation on recorded payloads, the cost of the representation, and a controlled time-to-quality result remain open.
 \end{abstract}
 
 \section{Introduction}
@@ -106,9 +106,9 @@ The paper develops two coupled design ideas:
 Version-aware bounded staleness is one realization of the execution contracts (Section~\ref{sec:async}); its incomplete pilot is reported separately and supports no operating-region conclusion.
 
 The evaluation (Section~\ref{sec:evaluation}) proceeds from structural correctness, through learning and a composed workflow, to measured system cost.
-Lineage-defined grouping matches an ID-joined reference on synthetic fixtures and on recorded rollouts of a composed rewrite-to-image run, in which both groupings train and neither shows a quality advantage.
+Lineage-defined grouping matches an ID-joined reference on synthetic fixtures and on recorded rollouts of a composed rewrite-to-image run, in which both groupings train and no quality advantage is established for either.
 Diffusion training improves held-out automatic scores with a material diversity regression, and the prespecified autoregressive recipe does not improve on its base model at the registered endpoint.
-\system iterates faster than VeRL-Omni under native recipes that retain estimator and trainable-parameter differences, and it has higher output-token throughput than veRL in one recipe-matched run per framework; its measured separate deployment is substantially slower than the colocated one.
+In reported timings, \system iterates faster than VeRL-Omni under native recipes that retain estimator and trainable-parameter differences, and it has higher output-token throughput than veRL in one recipe-matched run per framework; its measured separate deployment is substantially slower than the colocated one.
 These observations do not establish a cross-workload or time-to-quality advantage or complete the trajectory-centric claim: replay-level semantic validation on recorded payloads and a paired measurement of representation cost remain necessary.
 
 \section{Problem: Preserve Semantics While Changing Execution}
@@ -478,14 +478,16 @@ E4 checks these groups against an explicit ID-based reference and then studies t
 
 We ask four questions: whether \system learns on representative workloads (RQ1), how it performs end to end against existing systems (RQ2), what the trajectory abstraction enables and costs (RQ3), and how bounded staleness behaves (RQ4).
 Table~\ref{tab:experiment-map} maps the experiments to these questions.
-The trajectory-centric claim rests on E4, the direct test of lineage, and on E5, which is meant to bound the cost of the abstraction; E1--E3 establish whether the exercised paths train and how fast they run, and E6 is exploratory.
+E0 through E5 are all necessary for the trajectory-centric claim: E1--E3 establish whether the exercised paths train and how fast they run, E4 is the direct test of lineage, and E5 is meant to bound the cost of the abstraction.
+E6 is exploratory.
 E0, the correctness gate, is reported in Appendix~\ref{app:correctness}.
 
 \paragraph{Evidence sources.}
 The results have two sources of different strength.
 E0, E1, E2, and E4 are generated from data exported from the runs: per-prompt endpoint scores, per-rollout training metrics, per-checkpoint judge aggregates, the registered E4 analysis output, and parity rows; E3-AR is likewise backed by released per-step records.
+Two E4 statements are exceptions: the synthetic check count is transcribed from the earlier report, and the recorded-rollout check rests on the experiment's execution record.
 E3, E5-T, and E6 are transcribed from an earlier summary report whose run records were unavailable to us, so for these we show the reported aggregates only and reconstruct no learning curves or uncertainty bars.
-The reproducibility statement identifies the bundles, commits, and runs behind each source, and Appendix~\ref{app:protocol} gives the prespecified protocol and the deviations from it.
+The reproducibility statement identifies the bundles and, where they are recorded, the commits and runs behind each source; Appendix~\ref{app:protocol} gives the prespecified protocol.
 
 \begin{table}[H]
 \caption{Experiments, the question each addresses, and its outcome.}
@@ -499,7 +501,7 @@ ID & RQ & Study & Outcome \\
 E0 & all & Correctness, configuration, and instrumentation checks & Rollout--replay parity measured on five publication paths and on every E1 rollout; no acceptance tolerance set \\
 E1 & 1 & Qwen3-4B-Base on DAPO-Math & GRPO below base at the registered endpoint in three of three seeds; DRPO above base at one seed \\
 E2 & 1 & SD3.5-Medium diffusion training & Automatic scores up and diversity down in three seeds; reference trained, not evaluated \\
-E3 & 2 & Native \system and VeRL-Omni recipes, eight GPUs & \system faster per iteration; estimators and LoRA targets differ \\
+E3 & 2 & Native \system and VeRL-Omni recipes, eight GPUs & Reported aggregate timings lower for \system; strict semantic parity not established \\
 E3-AR & 2 & Recipe-matched Qwen3-4B DRPO, \system and veRL, 16 GPUs per system & Higher token throughput for \system over 500 steps; one run per system \\
 E4 & 3 & Root versus rewrite grouping in a rewrite-to-image run & Equality checks pass on synthetic fixtures and recorded rollouts; quality comparison inconclusive at three seed pairs \\
 E5 & 3 & Representation cost and deployment topology & Separate deployment slower than colocated; paired representation cost not measured \\
@@ -512,10 +514,10 @@ E6 & 4 & Synchronous and asynchronous Qwen3 study & Single-seed pilots only; for
 \label{sec:setup}
 
 Table~\ref{tab:workloads} lists the workloads.
-The autoregressive workloads use Qwen3-4B-Base~\citep{yang2025qwen3} on DAPO-Math-17k~\citep{yu2025dapo}, and the diffusion workloads use SD3.5-Medium~\citep{sd35medium2024}.
+The autoregressive workloads use Qwen3-4B-Base~\citep{yang2025qwen3} on DAPO-Math-17k~\citep{yu2025dapo}, and E2, E3, and E5-T use SD3.5-Medium~\citep{sd35medium2024}.
 
 \begin{table}[H]
-\caption{Workloads. A rollout batch is prompts $\times$ samples per prompt. Appendix~\ref{app:protocol} gives the complete recipes.}
+\caption{Workloads. Settings are those of the prespecified protocol; matching each to a resolved run configuration remains an artifact-release obligation. A rollout batch is prompts $\times$ samples per prompt, and Appendix~\ref{app:protocol} gives the complete recipes.}
 \label{tab:workloads}
 \centering
 \scriptsize
@@ -569,7 +571,7 @@ Every later checkpoint is lower than the one before it in every seed, and the fi
 The three final deficits range from \EOneMathGRPODeficitMin{} to \EOneMathGRPODeficitMax{} with mean \EOneMathGRPODeficitMean{}, and the seed-level 95\% interval for the change from base is [\EOneMathGRPOChangeLow{}, \EOneMathGRPOChangeHigh{}], so the seeds agree on the direction and do not determine its size.
 Training reward falls over the same span in every seed, from \EOneRewardEarlyEleven{}, \EOneRewardEarlyTwentyTwo{}, and \EOneRewardEarlyThirtyThree{} over rollouts 101--200 to \EOneRewardLateEleven{}, \EOneRewardLateTwentyTwo{}, and \EOneRewardLateThirtyThree{} over rollouts 701--800, so the decline is not a case of training reward rising while held-out accuracy falls.
 The final checkpoints also fail to terminate more often: \EOneLoopGRPOEleven{}, \EOneLoopGRPOTwentyTwo{}, and \EOneLoopGRPOThirtyThree{} of their MATH-500 completions end in a repetition loop, under the heuristic defined with the bundle, against \EOneLoopBase{} for the base.
-No adapted reference implementation was run, so the degradation cannot be attributed to the recipe or to the system.
+No reference implementation was run on the GRPO recipe, so the degradation cannot be attributed to the recipe or to the system.
 
 \paragraph{One added DRPO run stays above the base.}
 After GRPO seed 11 finished, one run of the DRPO recipe was added at the same seed, budget, data, and allocation, a departure from the prespecified protocol, which registers GRPO only.
@@ -606,10 +608,11 @@ The supported conclusion is a score--diversity trade-off, not an unqualified tra
 \label{fig:e2-reported}
 \end{figure}
 
-\paragraph{No reference comparison.}
+\paragraph{No reference comparison of training quality.}
 The VeRL-Omni reference for E2, E2-R, completed three training seeds and reports verified checkpoint exports, but no held-out head-to-head evaluation was performed.
 Export correctness cannot establish quality parity, and an evaluation alone would not remove the mismatch between the native flow and CPS estimators: it would give an explicitly labeled native-recipe comparison.
-Strict reproduction requires mathematical and effective-work parity, which neither E1 nor E2 has.
+Strict reproduction requires mathematical and effective-work parity with common quality endpoints.
+Neither E1 nor E2 has such a reference: the adapted veRL launcher of E3-AR ran a DRPO systems comparison without the common external evaluation.
 
 \subsection{RQ2: What is end-to-end system performance?}
 \label{sec:rq2}
@@ -617,12 +620,13 @@ Strict reproduction requires mathematical and effective-work parity, which neith
 We report two comparisons: E3 against VeRL-Omni~\citep{verlomni2026} on the E2 work unit, each system under its native recipe, and E3-AR against veRL on a recipe-matched autoregressive workload.
 
 \paragraph{Diffusion under native recipes (E3).}
-\system takes \ReportedUniRLSeconds{} seconds per iteration and VeRL-Omni with SDPA attention takes \ReportedSDPASeconds{}, a ratio of approximately \ReportedNativeSpeedup{} (Table~\ref{tab:rq2}, Figure~\ref{fig:reported-systems}).
+The reported times are \ReportedUniRLSeconds{} seconds per iteration for \system and \ReportedSDPASeconds{} for VeRL-Omni with SDPA attention, a ratio of approximately \ReportedNativeSpeedup{} (Table~\ref{tab:rq2}, Figure~\ref{fig:reported-systems}).
 VeRL-Omni's SDPA and FA3 times are similar; this is not an equivalence test.
 The two configurations match in the shape of the work unit and differ in algorithm: the stock \system recipe uses \texttt{FlowSDEStrategy} with three sampled early indices, the VeRL-Omni launcher requests \texttt{cps} over an early three-step window, and the realized LoRA target sets differ.
 These differences may change the transition distribution, the likelihood, and the trainable parameter count, so the ratio describes two complete native configurations and cannot be attributed solely to framework overhead.
 It is not a time-to-quality result either: the source report records greater short-run reward improvement per step for VeRL-Omni.
 We show no phase breakdown, because VeRL-Omni includes scoring in its generation timer and \system does not.
+The source documents disagree on some replicate summaries, so the figure uses only the explicitly identified aggregate table values, with no replicate points, confidence intervals, or statistical significance.
 
 \begin{table}[H]
 \caption{Reported E3 native-recipe systems timings and E5-T deployment timings. All rows use eight allocated GPUs. E3 and E5-T answer different questions; differences in estimators and deployment prevent a pure framework or transport attribution. Aggregate values retain the source table's precision, not an independently established measurement accuracy.}
@@ -694,7 +698,7 @@ For image $x_{p,j,k}$, the two group keys are $g_{\rm root}=p$ and $g_{\rm rewri
 The two scopes therefore change the normalization population, so a quality difference between them concerns the grouping objective and does not isolate an effect of the representation.
 The training reward conditions PickScore on the rewritten text; to speak to the original prompt, evaluation scores every held-out image against its root prompt, joined through lineage, which we call \emph{root-conditioned}.
 
-\paragraph{Grouping semantics hold on synthetic fixtures and on recorded rollouts.}
+\paragraph{Grouping semantics: synthetic fixtures and recorded rollouts.}
 On synthetic fixtures, E4a reports \EFourChecks/\EFourChecks{} successful checks in each scope and bit-exact agreement with an ID join.
 On recorded rollouts, the execution record of the corrected run, E4~v2, reports that for the first two training rollouts of each of its six runs, \system's advantages under both scopes equal an independent ID join of the saved sample IDs and rewards, with eight groups of 32 under root scope and 32 groups of eight under rewrite scope.
 This covers group membership and advantages on real rollout data.
@@ -771,12 +775,12 @@ The capacity timings were obtained with evaluation disabled and are planning obs
 
 \paragraph{The quality-target pilot did not pass.}
 The pilot ran the disaggregated configuration without overlap.
-Its MATH-500 avg@4 decreased from \ESixQualityEarly{} at rollout 150 to \ESixQualityLate{} at rollout 300, contrary to the preregistered requirement that the later checkpoint improve, and training reward also declined over the later window.
+Its reported MATH-500 avg@4 decreased from \ESixQualityEarly{} at rollout 150 to \ESixQualityLate{} at rollout 300, contrary to the preregistered requirement that the later checkpoint improve, and training reward also declined over the later window.
 This is a negative outcome for the tested pilot criterion; it neither identifies asynchrony as the cause nor establishes that every bounded-staleness configuration is ineffective.
 Two checkpoints are insufficient to locate a turning point, and because no quality threshold was registered there is no time-to-quality result.
 
 \paragraph{Evaluation variability.}
-A repeated evaluation of one checkpoint found variable prompt-level avg@4 scores despite a relatively small aggregate difference.
+The source report's repeated evaluation of one checkpoint found variable prompt-level avg@4 scores despite a relatively small aggregate difference.
 That observation is specific to the sampled checkpoint and decoding protocol; it is neither a universal noise floor nor a substitute for training-seed replication.
 A renewed study would first have to characterize it, as Appendix~\ref{app:protocol} describes.
 
@@ -789,7 +793,7 @@ OpenRLHF uses Ray, vLLM, and DeepSpeed to schedule the models in an RLHF workflo
 ROLL emphasizes a single-controller abstraction, parallel workers, sample lifecycle scheduling, and flexible device mapping~\citep{wang2025roll}.
 NeMo-RL provides scalable training and generation backends and multimodal model support~\citep{nemorl2025}.
 UniRL shares their concern for composable orchestration; its intended distinction is the lineage- and modality-aware trajectory boundary across AR, diffusion, and cross-stage generation.
-RQ3 evaluates that distinction.
+Whether that distinction holds is a question for RQ3, not for a feature table.
 
 \paragraph{Asynchronous post-training.}
 AReaL fully decouples generation and training and controls staleness to improve language-reasoning throughput~\citep{fu2025areal}.
@@ -802,7 +806,7 @@ These systems establish asynchrony as an execution design space.
 VeRL-Omni extends veRL toward diffusion, unified, and omni-modality models and integrates vLLM-Omni rollout~\citep{verlomni2026}.
 Relax is explicitly omni-native~\citep{zhang2026relax}.
 Support for image, video, or audio is therefore not what distinguishes \system.
-The distinction is how ancestry, typed replay state, and movement compose at the trajectory boundary; E4 tests it in one concrete workflow, and we make no general claim of easier integration.
+The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary; E4 tests one concrete workflow, and we make no general claim of easier integration.
 
 \paragraph{Diffusion RL algorithms.}
 DDPO casts denoising as a multi-step decision process~\citep{black2023ddpo}.
@@ -829,11 +833,11 @@ Fault isolation is limited by the shared Ray runtime and role lifecycle; the sys
 \paragraph{The empirical case is incomplete.}
 The GPU evidence supports qualified observations about diffusion scores and diversity, early autoregressive learning followed by degradation under the prespecified recipe, correct lineage grouping in a composed run, native-recipe iteration time, deployment sensitivity, and one recipe-matched AR throughput comparison.
 It leaves five things unestablished.
-No mathematically aligned reference was run, so nothing here reproduces another implementation.
-Autoregressive training does not improve on the base model at the registered endpoint, and the degradation is unexplained: no reference implementation was run, and one DRPO seed cannot separate the objective from the rest of its recipe.
-Lineage grouping shows no quality advantage: validation on recorded rollouts covers group membership and advantages, not replay tensors, and the corrected cross-stage comparison is inconclusive at three seed pairs.
-The overhead of the IR is not bounded, and scaling is not measured.
-No time-to-quality result exists: the recipe-matched AR comparison releases per-step evidence but lacks independent process repetitions and a common external quality endpoint, so it establishes neither run-to-run uncertainty nor training-quality reproduction, and asynchrony has no demonstrated benefit.
+The first is reference reproduction: no mathematically aligned reference has been evaluated on common quality endpoints, because E2-R was trained but not evaluated and the adapted launcher of E3-AR lacks the aligned external quality endpoint.
+The second is autoregressive improvement at the registered endpoint: the prespecified recipe ends below its base model, and the degradation is unexplained, because no reference was run on that recipe and one DRPO seed cannot separate the objective from the rest of its recipe.
+The third is a quality advantage from lineage grouping: validation on recorded rollouts covers group membership and advantages, not replay tensors, and the corrected cross-stage comparison is inconclusive at three seed pairs.
+The fourth is bounded IR overhead, together with scaling; neither is measured.
+The fifth is time-to-quality: the recipe-matched AR comparison releases per-step evidence but lacks independent process repetitions and a common external quality endpoint, so it establishes neither run-to-run uncertainty nor training-quality reproduction, and asynchrony has no demonstrated time-to-quality benefit.
 The E3, E5-T, and E6 values remain report-derived, and the release still needs exact run manifests, raw artifacts, consistent aggregate provenance, and independently regenerated results for every experiment.
 
 \section{Conclusion}
@@ -841,10 +845,9 @@ The E3, E5-T, and E6 values remain report-derived, and the release still needs e
 \system treats post-training as a trajectory program whose semantic object survives changes in generative family and execution topology.
 Lineage, typed modality values, replay segments, reward, credit, and policy version live in one IR; rollout, reward, training, transport, and publication are logical roles mapped separately to resources.
 The thesis needs four kinds of evidence: credible learning behavior across representative AR and diffusion workloads, competitive end-to-end execution without weakening semantic parity, lineage-defined credit and grouping in a real composed run, and measured IR and topology costs that bound the price of preserving that structure.
-The current evidence supplies each of the first three in part and leaves the fourth open.
-Diffusion scores improve with reduced diversity, while the prespecified autoregressive recipe learns early and then degrades below its base model.
-One native diffusion configuration iterates faster than VeRL-Omni, and one recipe-matched AR systems run shows 12.3\% higher end-to-end output-token throughput for \system, a workload-specific observation from a single run per system; the measured separate deployment carries a substantial penalty.
-A composed run computes both lineage-defined groupings correctly and trains under each, with no quality advantage for either.
+On learning, diffusion scores improve with reduced diversity, and the prespecified autoregressive recipe learns early and then degrades below its base model.
+On execution, one native diffusion configuration iterates faster than VeRL-Omni in reported timings, and one recipe-matched AR systems run shows 12.3\% higher end-to-end output-token throughput for \system, a workload-specific observation from a single run per system; the measured separate deployment carries a substantial penalty.
+On lineage, a composed run computes both lineage-defined groupings correctly and trains under each, and no quality advantage is established for either.
 The full trajectory-centric claim remains open until replay-level lineage validation on recorded payloads and matched representation-cost measurements exist.
 No experiment here supports a time-to-quality conclusion, and bounded staleness remains an exploratory operating-region question after its canceled study.
 
@@ -859,8 +862,8 @@ and immutable run-directory contract are specified in
 agent is in \texttt{GPU\_HANDOFF\_README.md}. Both documents intentionally contain
 no results.
 The current result audit is in \codepath{EXPERIMENT\_RESULTS.md}, which also lists unresolved source discrepancies for the report-derived values.
-The experiments ran at later commits than the audited one; each bundle records its own, and the design-audit commit is not a substitute for them.
-The dated bundle \codepath{artifacts/reported\_results/2026-09-22/} stores compact source snapshots, source-level caveats, reported numerical inputs, and generated tables and figures for E3, E5-T, and E6.
+The experiments ran at later commits than the audited one, and the design-audit commit is not a substitute for them: the 2026-09-30 and 2026-10-08 bundles record theirs, and the 2026-09-22 bundle records none.
+The dated bundle \codepath{artifacts/reported\_results/2026-09-22/} stores compact source snapshots, source-level caveats, reported numerical inputs, and the tables and figures that a deterministic generator renders from them, for E3, E5-T, and E6.
 Its values combine an online experiment report, retrieved on 2026-09-27 with an as-of date of 2026-09-22, with the result manuscript in pull request~2 of this repository at commit \texttt{ecce5097}; the VeRL-Omni reference of E3 is commit \texttt{01c87ee5}.
 These reproduce the transcription and presentation of the reports, not the original GPU measurements: the underlying per-run repositories were unavailable during that integration, so their source identities, complete timing distributions, and admission gates have not been independently revalidated here.
 The dated bundle \codepath{artifacts/reported\_results/2026-10-08-e0-e1-e2-e4/} stores data exported from the E0, E1, E2, and E4 runs, with a generator that reproduces their tables, figures, and quoted numbers, except E4a's check count, which still comes from the earlier bundle; its README lists run identities, source commits, and the evidence tier of each part.
@@ -950,7 +953,7 @@ E0's own test suite and configuration artifacts are not in this repository and w
   \item \textbf{Boundary integrity:} checkpoint and evaluation begin only after the async manager is empty; resume restores the optimizer version and republishes it before new rollout.
   \emph{Status:} enforced in code at the audited commit; no dedicated run is archived.
   \item \textbf{Work accounting:} compare generated tokens or pixels, denoising and replay steps, scored samples, and committed optimizer updates across systems.
-  \emph{Status:} not shown. No cross-system count comparison is archived with these runs.
+  \emph{Status:} not shown for the runs of the 2026-10-08 bundle; no cross-system count comparison is archived with them.
   \item \textbf{Structural preconditions:} validate unique root IDs, equal frontier depth, parent-major grouping, shared-field equality, and version provenance before merging or propagating credit; check against an ID-joined reference.
   \emph{Status:} both grouping scopes match an ID-joined reference on synthetic fixtures (E4a) and on recorded rollouts of the composed run (E4~v2, Section~\ref{sec:rq3}). The E4 record reports that advantage computation rejects interleaved rows, while reward propagation does not detect them.
 \end{enumerate}
@@ -971,10 +974,10 @@ E0's own test suite and configuration artifacts are not in this repository and w
 \input{artifacts/reported_results/2026-10-08-e0-e1-e2-e4/e1_parity_table.tex}
 \end{table}
 
-\section{Evaluation protocol and deviations}
+\section{Evaluation protocol}
 \label{app:protocol}
 
-This appendix records the prespecified protocol behind Section~\ref{sec:evaluation} and the places where the completed runs depart from it.
+This appendix records the prespecified protocol behind Section~\ref{sec:evaluation}, with the recorded deviations of the E1 runs; departures of the other experiments are not itemized.
 The settings describe the prespecified protocol unless explicitly identified as an observed result; matching each setting to a resolved run configuration remains an artifact-release obligation.
 
 \paragraph{Run admission.}
@@ -1049,7 +1052,6 @@ The older report-derived E3 bundle supplies only selected aggregate timings and 
 Strong and weak scaling use fixed global and fixed per-GPU work, respectively, after the primary single-node pair is complete.
 The 30-step E3 protocol does not support a time-to-quality claim; the E2-R quality comparison is still missing and E6 did not complete a threshold-based study.
 Neither the report's parameter-adjusted ratio nor its progress-normalized ratio is presented as an independently validated matched-control result.
-The source PR body and manuscript disagree on some replicate summaries; the present figure uses only the explicitly identified aggregate table values and does not fabricate replicate points, confidence intervals, or statistical significance.
 
 \paragraph{E4: protocol.}
 E4 uses a separate recipe from E2: $512\times512$, ten steps, one sampled SDE index among 0--8, $\eta=0.7$, LoRA 16/32, learning rate $3\times10^{-4}$, weight decay zero, clip $10^{-4}$, replay anchor, two updates, and microbatch one.
