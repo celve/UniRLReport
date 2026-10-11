@@ -393,19 +393,33 @@ Whether this reduces memory and transfer cost in practice is RQ3, not an assumpt
 \label{sec:lifecycle}
 
 Training and generation often hold different copies or formats of a policy.
-UniRL exposes their interaction as an ordered lifecycle:
+In every deployment, publication precedes the generation whose frontier it stamps; colocation additionally orders a memory handoff so that offloaded training state is restored only after the engine has released its memory.
+The resulting lifecycle therefore depends on whether the two roles share devices.
+
+\paragraph{Colocated slabs.}
+When training and rollout time-share one GPU set, publication is interleaved with residency changes:
 \begin{enumerate}
   \item wake the rollout engine sufficiently to receive weights;
   \item publish parameters if the cadence requires it;
-  \item optionally offload colocated training state;
-  \item generate and stamp the frontier with the engine's policy version;
-  \item sleep the engine when the selected residency policy requires it;
-  \item restore training state before replay and optimization.
+  \item offload training state if the residency policy enables it;
+  \item complete a staged wake, generate, and stamp the frontier with the engine's policy version;
+  \item sleep the engine when the residency policy requires it;
+  \item restore offloaded training state only after the engine is asleep.
 \end{enumerate}
+The order adapts to engine capabilities.
+An AR engine that supports staged wake receives weights before mapping its remaining memory; a rollout without publication offloads training state before waking the engine; a resident colocated engine is never put to sleep.
+A train-side engine reads live model objects, so it has neither a publication nor an offload step.
 
-The concrete order varies by engine capabilities.
-For example, staged wake can receive weights before mapping the rest of an AR engine, and a train-side engine reads live model objects without a separate publication role.
-Separate slabs use an explicit one-time handshake.
+\paragraph{Separate slabs.}
+When training and rollout occupy disjoint devices, no memory handoff is needed:
+\begin{enumerate}
+  \item at startup, connect the training side to the rollout workers through a one-time handshake;
+  \item at each publication point, transfer parameters across slabs, under the admission discipline of Section~\ref{sec:async} for asynchronous trainers;
+  \item generate on the engine and stamp the frontier with the published version.
+\end{enumerate}
+Training state remains resident on its own slab.
+The synchronous diffusion trainer may still sleep the engine between rollouts, whereas the asynchronous trainers keep it resident and reject any attempt to offload training state during rollout.
+
 Weight-sync implementations cover LoRA tensor paths and several full-weight paths, including tensor serialization, CUDA IPC, NCCL, and checkpoint rendezvous.
 The base engine can also receive per-track updates for composed models.
 
