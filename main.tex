@@ -387,7 +387,7 @@ The audited source provides (i) a colocated per-worker store, (ii) a per-GPU sto
 Mooncake itself was proposed for disaggregated serving~\citep{qin2024mooncake}; here its storage interface is a transport option rather than a claimed UniRL invention.
 
 The driver can therefore manipulate trajectory structure and metadata without materializing all GPU tensors.
-Whether this reduces memory and transfer cost in practice is RQ3, not an assumption.
+Whether this reduces memory and transfer cost in practice is a question for RQ3, which does not yet answer it (Section~\ref{sec:rq3}).
 
 \subsection{Phase lifecycles and policy publication}
 \label{sec:lifecycle}
@@ -411,7 +411,7 @@ The base engine can also receive per-track updates for composed models.
 
 The source rejects combinations whose lifecycle has not been validated, such as a train-side rollout on a physically separate slab or selected EMA/offload combinations.
 This fail-closed policy is important because a partially awakened engine or silently stale adapter can produce plausible but invalid training data.
-Section~\ref{sec:evaluation} therefore includes replay-consistency and failure-injection checks alongside throughput.
+Appendix~\ref{app:correctness} therefore reports replay-consistency checks before the first update and after publication; it reports no failure-injection run.
 
 \subsection{Synchronous execution}
 
@@ -440,7 +440,7 @@ Evaluation and checkpointing require a fully empty manager.
 
 This discipline differs from claiming fully asynchronous optimization.
 Weight publication remains a barrier, and the current asynchronous diffusion path deliberately limits in-flight batch structure more tightly than the AR path.
-The evaluation must report the actual lag histogram, dropped work, and barrier time; a nominal ``async'' label is insufficient.
+An evaluation of this path has to report the actual lag histogram, dropped work, and barrier time, not a nominal ``async'' label; the study that would have done so was canceled (Section~\ref{sec:rq4}).
 
 \section{Instantiations of the Common Contracts}
 \label{sec:instantiations}
