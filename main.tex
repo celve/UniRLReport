@@ -297,6 +297,7 @@ An agentic engine repeatedly appends policy turns and environment observations.
 The claim is therefore about a common boundary, not one universal generation kernel.
 
 \subsection{The algorithm boundary preserves specialized replay}
+\label{sec:algorithm-boundary}
 
 A train stack owns microbatch planning, gradient accumulation, global loss normalization, gradient clipping, optimizer steps, and per-update aggregation.
 An algorithm object owns the stage-specific map
@@ -757,7 +758,8 @@ The reported E5-T times are \ReportedColocatedSeconds{} seconds for shared deplo
 The separate UniRL configuration is also slower than the colocated VeRL-Omni E3 configuration.
 The report attributes much of the increase to reward processing, but without the phase records we retain this as a reported diagnosis, not an isolated causal result.
 Neither this deployment penalty nor the CPU timings below establish bounded representation overhead.
-We inventory which bundle/stage/adapter code the existing E4 path uses and which trainer, scheduler, transport, and credit modules it shares. This documents reuse; reduced integration effort would require a separate held-out implementation study.
+We inventory which bundle/stage/adapter code the E4 path adds and which trainer, scheduler, transport, and credit modules it reuses unchanged, as a concrete instance of the $M+N$ composition in Section~\ref{sec:algorithm-boundary}.
+\paperTODO{Complete the E4 reuse inventory (added versus unchanged modules, with line counts at the experiment commit) and attach it as an artifact before release.}
 
 \paragraph{Preliminary executable evidence.}
 We ran a source-importing regression harness against a clean UniRL checkout at
@@ -847,7 +849,8 @@ UniRL implements a version-stamped group and publication-boundary discipline sha
 VeRL-Omni extends veRL toward diffusion, unified, and omni-modality models and integrates vLLM-Omni rollout~\citep{verlomni2026}.
 Relax is explicitly omni-native~\citep{zhang2026relax}.
 Accordingly, ``supporting image, video, or audio'' cannot be the paper's contribution.
-The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary. E4 tests one concrete workflow; a universal claim of easier integration is outside its evidence scope.
+The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary.
+Because models and algorithms meet only at that boundary, they compose with $M+N$ rather than $M\times N$ integrations (Section~\ref{sec:algorithm-boundary}); E4 exercises one such composition across an AR stage and a diffusion stage.
 
 \paragraph{Diffusion RL algorithms.}
 DDPO casts denoising as a multi-step decision process~\citep{black2023ddpo}.
@@ -858,9 +861,9 @@ Its algorithm interface keeps their incompatible replay state explicit while reu
 \section{Limitations and Open Evidence}
 \label{sec:limitations}
 
-\paragraph{Integration is not automatic.}
-Each new architecture still needs a bundle, stages, conditions, and adapters for the selected rollout runtime.
-A common trajectory type does not eliminate tokenizer, scheduler, latent-layout, LoRA-target, or serving-version incompatibilities.
+\paragraph{Integration cost is per architecture.}
+Adding an architecture requires one bundle with its stages, conditions, and rollout adapters; this cost is paid once per model rather than once per model--algorithm pair.
+Architecture-specific details such as tokenizers, noise schedulers, latent layouts, and LoRA targets stay inside that bundle and its adapters rather than being abstracted by the trajectory type.
 The current ordered-frontier operations also assume compatible depths and parent-contiguous groups; arbitrary ragged forests, shared-field equality, and adversarial row order are not uniformly validated by the container itself.
 
 \paragraph{Topology is configured, not optimized.}
