@@ -195,6 +195,7 @@ where $I_i$ are sample identifiers, $X_i$ decoded modality values, $C_i$ model c
 In code, $\mathcal{T}$ is a \sample{} and each $P_i$ is a batched \parttype{}, rather than a single tree node.
 The sequence encodes a forest of root-prompt trees: $P_i$ holds every node at depth $i$, and edges connect adjacent layers.
 We call the last layer the \emph{frontier}; trajectories grow by appending layers to it.
+A generated layer is typed by the sampling-parameter class that produced it and the segment class it carries, for example an AR layer with a \texttt{TextSegment} or a diffusion layer with a \texttt{LatentSegment}; input layers carry the prompts and observations that condition generation.
 
 Identifiers encode ancestry.
 Root IDs contain no lineage separator; a branch appends a child ordinal.
@@ -204,7 +205,7 @@ For every non-root row $j$ in $P_i$, its parent ID must occur in $P_{i-1}$:
 \label{eq:parent-invariant}
 \end{equation}
 The constructor checks Equation~\ref{eq:parent-invariant}.
-The \texttt{fork} operator appends $k$ generated children per frontier row; \texttt{observe} appends a branch-one input from an environment; and \texttt{propagate\_rewards} reduces child reward to an unscored parent.
+The \texttt{fork} operator appends $k$ generated children per row of the frontier; \texttt{observe} appends a branch-one input from an environment; and \texttt{propagate\_rewards} reduces child reward to an unscored parent.
 
 Batch operations act on complete root groups.
 \texttt{Sample.split()} returns one tree-complete trajectory per root, and slicing or selection is implemented by selecting these groups rather than independent rows.
