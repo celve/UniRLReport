@@ -61,8 +61,8 @@ Across Heterogeneous Generative Models}
 \begin{abstract}
 Reinforcement-learning systems share an outer loop---generate, score, assign credit, and update---yet their implementations fragment because autoregressive tokens, diffusion trajectories, multimodal values, and multi-stage rollouts carry different state and impose different execution constraints.
 We present \system, a trajectory-centric system that places a lineage-preserving, modality-aware intermediate representation at the boundary between post-training semantics and distributed execution.
-A trajectory batch is a sequence of typed frontiers encoding prompt-rooted trees, with decoded values, model conditions, replay segments, rewards, and behavior-policy versions.
-A rollout request is a forked skeleton of typed shells, and every engine fills it through one $\sample\!\rightarrow\!\sample$ transformation.
+A trajectory batch is a sequence of typed layers, one per depth of a forest of prompt-rooted trees, carrying decoded values, model conditions, replay segments, rewards, and behavior-policy versions.
+A rollout request is a skeleton of such layers whose generated layers are still empty shells, and every engine fills them through one $\sample\!\rightarrow\!\sample$ transformation.
 The same trajectory can carry autoregressive and diffusion stages linked by lineage, while logical roles, placement, tensor transport, weight publication, and phase residency determine how the fill executes.
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
 The design is grounded in a source audit of UniRL commit \texttt{f5d7104}; subsequent experiment reports provide initial GPU evidence.
@@ -182,7 +182,7 @@ The present runtime uses a driver to sequence roles and Ray actors~\citep{moritz
 \section{A Trajectory-Centric Programming Model}
 \label{sec:trajectory}
 
-\subsection{A trajectory batch is a sequence of tree frontiers}
+\subsection{A trajectory batch is a sequence of tree layers}
 
 The central type is
 \begin{equation}
@@ -193,7 +193,8 @@ P_i = (I_i, X_i, C_i, Z_i, R_i, A_i, V_i, M_i),
 \end{equation}
 where $I_i$ are sample identifiers, $X_i$ decoded modality values, $C_i$ model conditions, $Z_i$ optimization segments, $R_i$ rewards, $A_i$ advantages or returns, $V_i$ a behavior-policy version, and $M_i$ auxiliary metadata.
 In code, $\mathcal{T}$ is a \sample{} and each $P_i$ is a batched \parttype{}, rather than a single tree node.
-The sequence encodes a forest of root-prompt trees whose edges connect adjacent frontiers.
+The sequence encodes a forest of root-prompt trees: $P_i$ holds every node at depth $i$, and edges connect adjacent layers.
+We call the last layer the \emph{frontier}; trajectories grow by appending layers to it.
 
 Identifiers encode ancestry.
 Root IDs contain no lineage separator; a branch appends a child ordinal.
@@ -252,7 +253,7 @@ E0 is the gate that checks these properties at the actual experiment boundaries 
 \draw[arr] (image) -- (credit);
 \draw[arr,dashed,bend left=32] (credit.south) to node[below,font=\scriptsize]{reward reduction} (rewrite.south);
 \end{tikzpicture}}
-\caption{Three trajectory shapes represented by the same ordered-part IR. A generated part retains decoded values and the optimization segment required to replay its policy. The policy version $v$ is attached to generated frontiers. The cross-stage path illustrates available ancestry; E4 freezes the rewrite model and trains only diffusion.}
+\caption{Three trajectory shapes represented by the same ordered-part IR. A generated part retains decoded values and the optimization segment required to replay its policy. The policy version $v$ is attached to generated layers. The cross-stage path illustrates available ancestry; E4 freezes the rewrite model and trains only diffusion.}
 \label{fig:trajectory-ir}
 \end{figure}
 
@@ -292,7 +293,7 @@ It also creates a measurable cost: recursive structural operations and reference
 \label{sec:unfold}
 
 A rollout request is the skeleton of the tree it will become.
-Starting from the root part, the caller appends one generation shell per stage with \texttt{fork}.
+Starting from the root layer, the caller appends one generated layer per stage with \texttt{fork}; until an engine fills it, such a layer is a \emph{shell}.
 Each shell fixes its child count, carries child identifiers that already name their parents, and holds a typed sampling-parameter object---autoregressive or diffusion---that identifies the generative process that must fill it.
 The prompt-enhancement and unified-model trainers build
 \begin{equation}
@@ -331,7 +332,7 @@ The claim is therefore about a common boundary, not one universal generation ker
 \label{sec:fold}
 
 Training traverses the filled tree in the opposite direction.
-The reward role scores the frontier shell, which in the cross-stage layouts above is the image layer.
+The reward role scores the frontier, which in the cross-stage layouts above is the image layer.
 \texttt{propagate\_rewards} then reduces each scored layer onto its unscored parent layer by mean, maximum, or sum, so an upstream AR layer receives feedback from the images it conditioned.
 Credit is computed per trainable layer: \texttt{compute\_advantages} labels each row by its ancestor at a chosen depth---the immediate parent by default, or the root prompt when requested---and, by default, normalizes rewards within each group.
 For the image layer of Equation~\ref{eq:skeleton}, the two choices compare images under one rewrite or all images under one original prompt; selecting between them is a lineage query rather than a reconstructed join (Section~\ref{sec:rq3}).
@@ -901,7 +902,7 @@ Its algorithm interface keeps their incompatible replay state explicit while reu
 \paragraph{Integration is not automatic.}
 Each new architecture still needs a bundle, stages, conditions, and adapters for the selected rollout runtime.
 A common trajectory type does not eliminate tokenizer, scheduler, latent-layout, LoRA-target, or serving-version incompatibilities.
-The ordered-frontier representation targets trajectories that grow by forking and observation; arbitrary ragged forests are outside its current scope.
+The ordered-layer representation targets trajectories that grow by forking and observation; arbitrary ragged forests are outside its current scope.
 
 \paragraph{Topology is configured, not optimized.}
 Placement scopes make resource choices explicit but do not search for the best split.
@@ -1022,7 +1023,7 @@ The following system-level checks are the evidence requirements, not a claim tha
   \item \textbf{Batch-version integrity:} verify that an optimizer batch never mixes behavior versions when the configured algorithm assumes one version.
   \item \textbf{Boundary integrity:} checkpoint and evaluation begin only after the async manager is empty; resume restores the optimizer version and republishes it before new rollout.
   \item \textbf{Work accounting:} compare generated tokens or pixels, denoising and replay steps, scored samples, and committed optimizer updates across systems.
-  \item \textbf{Structural preconditions:} validate unique root IDs, equal frontier depth, parent-major grouping, shared-field equality, and version provenance before merging or propagating credit; check against an ID-joined reference.
+  \item \textbf{Structural preconditions:} validate unique root IDs, equal part counts, parent-major grouping, shared-field equality, and version provenance before merging or propagating credit; check against an ID-joined reference.
 \end{enumerate}
 
 \end{document}
