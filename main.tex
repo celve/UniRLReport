@@ -366,7 +366,7 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \subsection{Logical roles, device slabs, and worker slots}
 
 A \texttt{DevicePool} creates one Ray worker per GPU initially and reserves one strict-packed placement group per node.
-Each worker occupies a slot on its GPU; additional slots are created on demand, each with a fractional share of that GPU.
+Each worker occupies a slot on its GPU: slot~0 exists from startup, further slots are created on demand up to a per-GPU limit, and every slot reserves an equal fraction of that GPU.
 A placement scope selects a fraction of currently available devices.
 Roles created inside a scope either share its worker slot---enabling local sibling access and memory time-sharing---or receive isolated slots on the same devices.
 Disjoint top-level scopes form separate training, rollout, or reward slabs.
@@ -395,32 +395,32 @@ Whether this reduces memory and transfer cost in practice is RQ3, not an assumpt
 \label{sec:lifecycle}
 
 Training and generation often hold different copies or formats of a policy.
-In every deployment, publication precedes the generation whose frontier it stamps; colocation additionally orders a memory handoff so that offloaded training state is restored only after the engine has released its memory.
-The resulting lifecycle therefore depends on whether the two roles share devices.
+In every deployment, a due publication completes before the generation it serves, and the engine stamps each generated frontier with its current version.
+Trainers that publish through the rollout manager set that version to the optimizer version (Section~\ref{sec:async}); other synchronous paths keep an engine-local counter.
+How publication interleaves with memory residency depends on whether the two roles share devices.
 
 \paragraph{Colocated slabs.}
-When training and rollout time-share one GPU set, publication is interleaved with residency changes:
-\begin{enumerate}
-  \item wake the rollout engine sufficiently to receive weights;
-  \item publish parameters if the cadence requires it;
-  \item offload training state if the residency policy enables it;
-  \item complete a staged wake, generate, and stamp the frontier with the engine's policy version;
-  \item sleep the engine when the residency policy requires it;
-  \item restore offloaded training state only after the engine is asleep.
-\end{enumerate}
-The order adapts to engine capabilities.
-An AR engine that supports staged wake receives weights before mapping its remaining memory; a rollout without publication offloads training state before waking the engine; a resident colocated engine is never put to sleep.
-A train-side engine reads live model objects, so it has neither a publication nor an offload step.
+When training and rollout time-share one GPU set, publication is interleaved with residency changes, and the audited trainers use four orders:
+\begin{itemize}
+  \item \emph{Default (AR, diffusion, and agentic):} wake the engine, publish if due, offload training state if enabled, and generate; afterwards, sleep the engine and restore any offloaded training state.
+  \item \emph{Staged-wake AR engine:} when a publication is due and offload is enabled, wake only the weight memory, publish, offload training state, and complete the wake before generation.
+  \item \emph{AR with offload but no publication due:} offload training state before waking the engine.
+  \item \emph{Anchored AR engine:} extract weights from the training state, offload it, wake the engine, and push the extracted weights; with offload disabled, the engine stays resident and is never slept.
+\end{itemize}
+Whenever the engine is slept after offload, the sleep precedes the restore, so training state never reloads into memory the engine still holds.
+The diffusion trainer can instead keep the engine awake after generation, in which case training state is restored alongside it.
+A train-side engine reads live model objects, so training state is never offloaded for it.
 
 \paragraph{Separate slabs.}
-When training and rollout occupy disjoint devices, no memory handoff is needed:
+When training and rollout occupy disjoint devices, generation needs no memory handoff:
 \begin{enumerate}
   \item at startup, connect the training side to the rollout workers through a one-time handshake;
   \item at each publication point, transfer parameters across slabs, under the admission discipline of Section~\ref{sec:async} for asynchronous trainers;
-  \item generate on the engine and stamp the frontier with the published version.
+  \item generate and stamp the frontier with the engine's current version.
 \end{enumerate}
-Training state remains resident on its own slab.
-The synchronous diffusion trainer may still sleep the engine between rollouts, whereas the asynchronous trainers keep it resident and reject any attempt to offload training state during rollout.
+Generation never offloads training state to make room for the engine.
+The synchronous diffusion trainer may still sleep the engine between rollouts and, if configured, offload training state during a reward phase that shares the training slab.
+The asynchronous trainers keep the engine awake; the asynchronous diffusion trainer rejects reward-phase offload.
 
 Weight-sync implementations cover LoRA tensor paths and several full-weight paths, including tensor serialization, CUDA IPC, NCCL, and checkpoint rendezvous.
 The base engine can also receive per-track updates for composed models.
