@@ -366,6 +366,7 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \subsection{Logical roles, device slabs, and worker slots}
 
 A \texttt{DevicePool} creates one Ray worker per GPU initially and reserves one strict-packed placement group per node.
+Each worker occupies a slot on its GPU; additional slots are created on demand, each with a fractional share of that GPU.
 A placement scope selects a fraction of currently available devices.
 Roles created inside a scope either share its worker slot---enabling local sibling access and memory time-sharing---or receive isolated slots on the same devices.
 Disjoint top-level scopes form separate training, rollout, or reward slabs.
