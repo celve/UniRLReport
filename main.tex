@@ -381,10 +381,14 @@ This resembles HybridFlow's separation between orchestration and distributed com
 
 \subsection{Tensor references decouple structure from movement}
 
-Before an RPC, dense tensor leaves may be \emph{dehydrated} into \texttt{TensorRef}s.
-A reference is an ordered list of half-open row spans over opaque handles, plus shape, dtype, and device metadata.
-Selection and contiguous slicing construct new span views without moving tensor data.
-At a destination, hydration resolves all referenced spans in a batch and writes the tensors back into the nested object in place; spans whose trailing widths differ are zero-padded to a common width.
+In the single-controller design, every role method is a remote call issued by the driver, and its result returns to the driver before being dispatched to the next role.
+If trajectories carried dense tensors across these hops, latent snapshots, token log probabilities, and decoded media would pass through the driver on every call, and the driver would have to materialize them merely to split, select, or scatter complete root groups.
+UniRL therefore routes control through the driver but keeps tensor data on the workers.
+When a role method returns, its worker stores every dense tensor leaf in a local transport and \emph{dehydrates} it into a \texttt{TensorRef}: an ordered list of half-open row spans over opaque handles, plus shape, dtype, and device metadata.
+The driver receives only this dehydrated trajectory; selection and contiguous slicing construct new span views without moving tensor data.
+Before the next call, the transport localizes each reference for its destination worker, leaving resident spans in place and transferring the others worker-to-worker.
+The destination worker then \emph{hydrates} all referenced spans in one batch and writes the tensors back into the nested object in place before invoking the method; spans whose trailing widths differ are zero-padded to a common width.
+The trainers hydrate on the driver only the fields they need for control decisions, such as rewards; the anchored-engine AR path is an exception that materializes the full generated trajectory.
 
 The transport interface has a deliberately small contract: store tensors, resolve handles, identify references, and optionally localize references for destination workers.
 The audited source provides (i) a colocated per-worker store, (ii) a per-GPU store with IPC and NCCL transfers, and (iii) a TransferQueue path backed by simple storage or Mooncake-compatible storage.
