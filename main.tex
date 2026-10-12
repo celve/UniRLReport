@@ -404,17 +404,12 @@ Trainers that publish through the rollout manager set that version to the optimi
 How publication interleaves with memory residency depends on whether the two roles share devices.
 
 \paragraph{Colocated slabs.}
-When training and rollout time-share one GPU set, publication is interleaved with residency changes.
-The AR trainer uses four orders, and the agentic trainer uses the first:
-\begin{itemize}
-  \item \emph{Default:} wake the engine, publish if due, offload training state if enabled, and generate; afterwards, sleep the engine and restore any offloaded training state.
-  \item \emph{Staged-wake AR engine:} when a publication is due and offload is enabled, wake only the weight memory, publish, offload training state, and complete the wake before generation; the vLLM native-IPC path offloads optimizer state before publication and the model shard after it.
-  \item \emph{AR with offload but no publication due:} offload training state before waking the engine.
-  \item \emph{Anchored AR engine:} extract weights from the training state, offload it, wake the engine, and push the extracted weights; with offload disabled, the engine stays resident and is never slept.
-\end{itemize}
-Whenever the engine is slept after offload, the sleep precedes the restore, so training state never reloads into memory the engine still holds.
-The diffusion trainers instead express residency as one resident-or-parked choice per role (training, rollout, reward): they park every non-resident role before waking the engine, publish into the awake engine, sleep it after generation unless the rollout role is resident, and restore a parked trainer only before its optimizer step.
-The prompt-enhancement and unified-model trainers keep the AR-style single offload switch, and the prompt-enhancement trainer sleeps its engine after every rollout.
+When training and rollout time-share one GPU set, the engine is put to sleep---releasing its weight and cache memory---between generations and woken before the next one, and training state may be offloaded to host memory while the engine is awake.
+Every colocated order keeps two invariants: a due publication completes before generation, and memory is released before the role that needs it is brought up, so the engine sleeps before offloaded training state is restored.
+The default order wakes the engine, publishes if due, offloads training state if enabled, and generates; afterwards it sleeps the engine and restores the training state.
+The AR and agentic trainers follow this order, and the AR trainer adapts it to engine capabilities: an engine that can restore its weight memory separately from its cache receives weights before allocating the rest, and an engine pinned to one GPU of the slab receives weights that are extracted before training state is offloaded and pushed after the engine wakes (Appendix~\ref{app:residency}).
+The diffusion trainers express residency as one resident-or-offloaded choice per role (training, rollout, reward): they offload every non-resident role before waking the engine, publish into the awake engine, sleep it after generation unless the rollout role is resident, and restore an offloaded trainer only before its optimizer step.
+The prompt-enhancement trainer follows the default order, and the unified-model trainer with separate AR and diffusion engines uses the same extract-then-push order.
 A train-side engine reads live model objects, so training state is never offloaded for it.
 
 \paragraph{Separate slabs.}
@@ -425,7 +420,7 @@ When training and rollout occupy disjoint devices, generation needs no memory ha
   \item generate and stamp the frontier with the engine's current version.
 \end{enumerate}
 Generation never offloads training state to make room for the engine.
-The synchronous diffusion trainer sleeps the engine between rollouts unless the rollout role is resident and, when the training role is not resident, parks training state while a reward role shares the training slab.
+The synchronous diffusion trainer sleeps the engine between rollouts unless the rollout role is resident and, when the training role is not resident, offloads training state while a reward role shares the training slab.
 The asynchronous trainers keep the engine awake; the asynchronous diffusion trainer also requires a resident reward role.
 
 Weight-sync implementations cover in-process and cross-slab LoRA adapter pushes and full-weight paths via serialized tensors, CUDA IPC (ZMQ or vLLM's native weight-transfer engine), SGLang checkpoint-engine IPC, NCCL broadcast, and a checkpoint-file handoff.
@@ -433,7 +428,7 @@ The base engine can also receive per-track updates for composed models.
 
 The stamped policy version is behavior-version provenance only on the asynchronous paths.
 The asynchronous and agentic trainers set it to the optimizer-update count at each publication.
-The synchronous trainers do not advance it, so their frontiers keep version zero, except that the direct vLLM engine stamps its native-IPC publication count.
+The synchronous trainers do not advance it, so their frontiers keep version zero, except that the vLLM engine stamps the number of weight transfers it has received through vLLM's native weight-transfer engine.
 
 The source rejects combinations whose lifecycle has not been validated, such as a train-side rollout on a physically separate slab or selected EMA/offload combinations.
 This fail-closed policy is important because a partially awakened engine or silently stale adapter can produce plausible but invalid training data.
@@ -963,6 +958,30 @@ Async and agentic & \codepath{unirl/trainer/async\_rollout.py}, \codepath{async\
 Weight publication & \codepath{unirl/distributed/weight\_sync/}, including \codepath{full/ckpt\_engine\_ipc.py}; engine-specific receivers under \codepath{unirl/rollout/engine/} \\
 Instrumentation & \codepath{unirl/utils/profiling.py}, \codepath{memory\_monitor.py}, \codepath{wandb\_logger.py} \\
 \bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Colocated residency orders}
+\label{app:residency}
+
+Table~\ref{tab:residency-orders} lists the orders that the trainers at the audited release use on a colocated slab.
+Each satisfies the two invariants of Section~\ref{sec:lifecycle}: a due publication completes before generation, and memory is released before the role that needs it is brought up.
+
+\begin{table}[H]
+\caption{Colocated residency orders. ``Offload'' moves training state to host memory; ``sleep'' releases the engine's weight and cache memory, and ``wake'' restores it.}
+\label{tab:residency-orders}
+\centering
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}L{0.17\textwidth}L{0.21\textwidth}YL{0.21\textwidth}@{}}
+\toprule
+Order & Applies when & Before generation & After generation \\
+\midrule
+Default & AR, agentic, and prompt-enhancement trainers, unless a row below applies & Wake the engine, publish if due, offload training state if enabled & Sleep the engine, then restore training state \\
+Split wake & AR; publication due, offload enabled, engine can restore weight memory separately & Wake weight memory only, publish, offload training state, complete the wake & As default \\
+Split wake, vLLM weight transfer & As above, publishing through vLLM's native weight-transfer engine & Offload optimizer state, wake weight memory, publish, offload the model shard, complete the wake & As default \\
+Offload without publication & AR; offload enabled, no publication due & Offload training state, then wake the engine & As default \\
+Extract, then push & AR with the engine pinned to one designated GPU of the slab; unified-model trainer with separate AR and diffusion engines & Extract weights if due, offload training state if enabled, wake the engine(s), push the extracted weights & As default; a pinned AR engine with offload disabled stays awake \\
+Per-role residency & Diffusion trainers & Extract the adapter first if training will be offloaded; offload every non-resident role, wake the engine, publish if due & Sleep the engine unless the rollout role is resident; restore training state before the optimizer step \\\bottomrule
 \end{tabularx}
 \end{table}
 
