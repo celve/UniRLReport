@@ -63,7 +63,7 @@ Reinforcement-learning systems share an outer loop---generate, score, assign cre
 We present \system, a trajectory-centric system that places a lineage-preserving, modality-aware intermediate representation at the boundary between post-training semantics and distributed execution.
 A trajectory batch is a sequence of typed layers, one per depth of a forest of prompt-rooted trees, carrying decoded values, model conditions, replay segments, rewards, and behavior-policy versions.
 A rollout request is a skeleton of such layers whose generated layers are still empty shells, and every engine fills them through one $\sample\!\rightarrow\!\sample$ transformation.
-The same trajectory can carry autoregressive and diffusion stages linked by lineage, while logical roles, placement, tensor transport, weight publication, and role residency determine how the fill executes.
+The same trajectory can carry autoregressive and diffusion stages linked by lineage, while logical roles, placement, tensor transport, weight publication, and memory residency determine how the fill executes.
 These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
 The design is grounded in a source audit of UniRL release v0.2.0 (commit \texttt{fd344ad}); subsequent experiment reports provide initial GPU evidence.
 Three-seed diffusion results show improved held-out automatic scores together with reduced within-prompt diversity, while an eight-GPU native-recipe comparison reports lower iteration time than VeRL-Omni.
@@ -408,7 +408,7 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \node[mech,right=8mm of dispatch] (transport) {Tensor references\\selectable transport};
 \node[mech,right=8mm of transport] (lifecycle) {Weight publication\\residency lifecycle};
 
-\node[topo,below=7mm of dispatch,xshift=-22mm] (coloc) {Colocated / role residency};
+\node[topo,below=7mm of dispatch,xshift=-22mm] (coloc) {Colocated / time-shared memory};
 \node[topo,right=8mm of coloc] (separate) {Separate GPU slabs};
 \node[topo,right=8mm of separate] (async) {Bounded-staleness async};
 \draw[-{Latex[length=2mm]},draw=gray!70] (place.south) -- (coloc.north);
