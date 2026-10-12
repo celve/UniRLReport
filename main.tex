@@ -528,6 +528,10 @@ Weight publication remains a barrier.
 The asynchronous diffusion trainer admits one prompt batch at a time and requires each training batch to come from a single generation request, so its next generation overlaps only the optimizer step; the AR trainer may keep several batches in flight and refills before reward scoring.
 The evaluation must report the actual lag histogram, dropped work, and barrier time; a nominal ``async'' label is insufficient.
 
+\input{sections/reward_service}
+
+\input{sections/rollout_fidelity}
+
 \section{Instantiations of the Common Contracts}
 \label{sec:instantiations}
 
