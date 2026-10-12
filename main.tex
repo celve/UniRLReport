@@ -916,28 +916,36 @@ OpenRLHF uses Ray, vLLM, and DeepSpeed to schedule the models in an RLHF workflo
 ROLL emphasizes a single-controller abstraction, parallel workers, sample lifecycle scheduling, and flexible device mapping~\citep{wang2025roll}.
 NeMo-RL provides scalable training and generation backends and multimodal model support~\citep{nemorl2025}.
 Group-relative recipes in these systems~\citep{sheng2024hybridflow,hu2024openrlhf,wang2025roll,nemorl2025} typically record one level of sampling structure---responses grouped under their prompt by a per-prompt identifier or by contiguous sample order---whereas UniRL generalizes that group key to multi-level ancestry encoded in sample identifiers.
-UniRL shares their concern for composable orchestration; its intended distinction is the lineage- and modality-aware trajectory boundary across AR, diffusion, and cross-stage generation.
-That distinction must be established by RQ3 rather than a feature table.
+These systems already drive distinct generation and training backends from one control loop and colocate or separate those backends as a placement choice; UniRL keeps that split and changes the object the loop schedules.
+Scheduling and data-parallel sharding move complete root groups rather than rows, and each generated layer carries the replay segment for its own AR or diffusion stage (Section~\ref{sec:trajectory}).
+A flat-row batch can recover the same group memberships by joining on retained parent keys (Section~\ref{sec:problem}); UniRL differs in that sharding, credit assignment, and cross-stage conditioning consume that ancestry in place, so changing the execution path does not require rebuilding the join.
+RQ3 specifies the corresponding control: an ID-joined reference on recorded rewards and replay tensors (Section~\ref{sec:rq3}).
+To date its agreement check uses synthetic fixtures, and the paired cost of carrying the structure (E5-R) is unmeasured; the single-process CPU regression is not that measurement.
 
 \paragraph{Asynchronous post-training.}
 AReaL fully decouples generation and training and controls staleness to improve language-reasoning throughput~\citep{fu2025areal}.
 Relax uses service-level separation, a TransferQueue data bus, and configurable staleness for omni-modal post-training~\citep{zhang2026relax}.
 slime supports persistent asynchronous rollout generation around a training/rollout/data-buffer loop~\citep{slime2025}.
-These systems make asynchrony an execution design space, not a UniRL novelty claim.
-UniRL implements a version-stamped group and publication-boundary discipline shared by AR and diffusion paths; RQ4 tests whether that realization is useful, without claiming a new asynchronous RL algorithm.
+These systems make asynchrony an execution design space.
+UniRL takes a conservative point within it: publication remains a barrier, and lag is bounded in optimizer-update units (Section~\ref{sec:async}).
+Each generated part carries its output policy version in the trajectory IR, while admission, lag filtering, and publication stay in one manager shared by the AR and diffusion trainers.
+The filter keeps or drops whole root groups so that group-relative baselines stay complete, and no training batch spans behavior versions; this is stricter than AReaL, whose decoupled objective admits trajectories generated under several policy versions~\citep{fu2025areal}.
+RQ4 reports only single-seed capacity measurements and a quality-target pilot that did not pass; it supports no throughput or time-to-quality comparison with these systems (Section~\ref{sec:rq4}).
 
 \paragraph{Multimodal and diffusion post-training systems.}
 VeRL-Omni extends veRL toward diffusion, unified, and omni-modality models and integrates vLLM-Omni rollout~\citep{verlomni2026}.
 Relax is explicitly omni-native~\citep{zhang2026relax}.
-Accordingly, ``supporting image, video, or audio'' cannot be the paper's contribution.
-The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary.
-Because models and algorithms meet only at that boundary, they compose with $M+N$ rather than $M\times N$ integrations (Section~\ref{sec:algorithm-boundary}); E4 exercises one such composition across an AR stage and a diffusion stage.
+Modality coverage therefore does not distinguish UniRL from these systems.
+The distinction is how ancestry and typed replay state survive execution: an AR stage and a diffusion stage are two layers of one \sample{} (Section~\ref{sec:trajectory}), and tensor references move their dense state without changing that lineage (Section~\ref{sec:execution}).
+Models and algorithms meet only at the per-stage conditions, segment, and advantages that an algorithm consumes, so $M$ models and $N$ shared algorithms require $M+N$ rather than $M\times N$ integrations (Section~\ref{sec:algorithm-boundary}).
+E4 runs one frozen AR rewrite stage into a trained diffusion stage (Section~\ref{sec:rq3}).
+Its lineage check uses synthetic fixtures, its quality comparison is inconclusive across three seeds, and its rewrite text was malformed; the pending module inventory would list what that path reuses, not measure integration effort.
 
 \paragraph{Diffusion RL algorithms.}
 DDPO casts denoising as a multi-step decision process~\citep{black2023ddpo}.
 Flow-GRPO converts flow sampling to an SDE and applies group-relative optimization~\citep{liu2025flowgrpo}; DanceGRPO generalizes related ideas across visual generation tasks~\citep{xue2025dancegrpo}; DiffusionNFT instead optimizes a forward-process objective from reward-ranked generations~\citep{zheng2025diffusionnft}.
-UniRL implements several algorithm families but does not claim their mathematical ideas.
-Its algorithm interface keeps their incompatible replay state explicit while reusing scheduling and training mechanics.
+UniRL consumes FlowGRPO-style and DiffusionNFT objectives through its algorithm interface and claims neither objective (Section~\ref{sec:instantiations}).
+What the interface contributes is that their incompatible sufficient statistics stay explicit: FlowGRPO-style objectives replay recorded SDE transitions, DiffusionNFT trains on clean generated samples, and both reuse the same train stack for microbatching and optimizer state.
 
 \section{Limitations and Open Evidence}
 \label{sec:limitations}
