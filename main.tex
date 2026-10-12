@@ -347,6 +347,7 @@ In the composed prompt-enhancement workflow, the AR and diffusion models have se
 When both layers belong to one backbone, as in HunyuanImage-3, a unified stack back-propagates the AR and image losses through one shared optimizer step.
 
 \subsection{The algorithm boundary preserves specialized replay}
+\label{sec:algorithm-boundary}
 
 Within a track, the algorithm consumes its layer's conditions, segment, and advantages.
 A train stack owns microbatch planning, gradient accumulation, global loss normalization, gradient clipping, optimizer steps, and per-update aggregation.
@@ -422,6 +423,7 @@ Figure~\ref{fig:architecture} separates the feedback program from the mechanisms
 \subsection{Logical roles, device slabs, and worker slots}
 
 A \texttt{DevicePool} creates one Ray worker per GPU initially and reserves one strict-packed placement group per node.
+Each worker occupies a slot on its GPU: slot~0 exists from startup, further slots are created on demand up to a per-GPU limit, and every slot reserves an equal fraction of that GPU.
 A top-level placement scope claims a fraction of the whole device pool from the still-unclaimed devices; a nested scope takes a fraction of its parent's devices.
 Roles created inside a scope either share its worker slot---enabling local sibling access and memory time-sharing---or receive isolated slots on the same devices (isolated slots require the per-GPU store transport).
 Disjoint top-level scopes form separate training, rollout, or reward slabs.
@@ -450,28 +452,36 @@ Whether this reduces memory and transfer cost in practice is RQ3, not an assumpt
 \label{sec:lifecycle}
 
 Training and generation often hold different copies or formats of a policy.
-On a colocated slab, UniRL orders their interaction so that each role's weights leave the GPU before a role that needs the memory is brought up, and publication completes before generation.
-The AR trainer realizes this as an ordered lifecycle:
-\begin{enumerate}
-  \item wake the rollout engine sufficiently to receive weights;
-  \item publish parameters if the cadence requires it;
-  \item optionally offload colocated training state;
-  \item complete the wake and generate, stamping the frontier with the engine's policy version;
-  \item sleep the engine;
-  \item restore training state before replay and optimization.
-\end{enumerate}
-The diffusion trainers instead express residency as one resident-or-parked choice per role (training, rollout, reward): they park every non-resident role before waking the engine, publish into the awake engine, sleep it after generation unless the rollout role is resident, and restore a parked trainer only before its optimizer step.
-The prompt-enhancement and unified-model trainers keep the AR-style single offload switch, and the prompt-enhancement trainer sleeps its engine after every rollout.
+In every deployment, a due publication completes before the generation it serves, and the engine stamps each generated frontier with its current version.
+Trainers that publish through the rollout manager set that version to the optimizer version (Section~\ref{sec:async}); the remaining cases are described below.
+How publication interleaves with memory residency depends on whether the two roles share devices.
 
-The concrete order also varies by engine capabilities.
-For example, staged wake can receive weights before mapping the rest of an AR engine, the vLLM native-IPC path offloads optimizer state before publication and the model shard after it, and a train-side engine reads live model objects without a separate publication role.
-Separate slabs use an explicit one-time handshake.
+\paragraph{Colocated slabs.}
+When training and rollout time-share one GPU set, the engine is put to sleep---releasing its weight and cache memory---between generations and woken before the next one, and training state may be offloaded to host memory while the engine is awake.
+Every colocated order keeps two invariants: a due publication completes before generation, and memory is released before the role that needs it is brought up, so the engine sleeps before offloaded training state is restored.
+The default order wakes the engine, publishes if due, offloads training state if enabled, and generates; afterwards it sleeps the engine and restores the training state.
+The AR and agentic trainers follow this order, and the AR trainer adapts it to engine capabilities: an engine that can restore its weight memory separately from its cache receives weights before allocating the rest, and an engine pinned to one GPU of the slab receives weights that are extracted before training state is offloaded and pushed after the engine wakes (Appendix~\ref{app:residency}).
+The diffusion trainers express residency as one resident-or-offloaded choice per role (training, rollout, reward): they offload every non-resident role before waking the engine, publish into the awake engine, sleep it after generation unless the rollout role is resident, and restore an offloaded trainer only before its optimizer step.
+The prompt-enhancement trainer follows the default order, and the unified-model trainer with separate AR and diffusion engines uses the same extract-then-push order.
+A train-side engine reads live model objects, so training state is never offloaded for it.
+
+\paragraph{Separate slabs.}
+When training and rollout occupy disjoint devices, generation needs no memory handoff:
+\begin{enumerate}
+  \item at startup, connect the training side to the rollout workers through a one-time handshake;
+  \item at each publication point, transfer parameters across slabs, under the admission discipline of Section~\ref{sec:async} for asynchronous trainers;
+  \item generate and stamp the frontier with the engine's current version.
+\end{enumerate}
+Generation never offloads training state to make room for the engine.
+The synchronous diffusion trainer sleeps the engine between rollouts unless the rollout role is resident and, when the training role is not resident, offloads training state while a reward role shares the training slab.
+The asynchronous trainers keep the engine awake; the asynchronous diffusion trainer also requires a resident reward role.
+
 Weight-sync implementations cover in-process and cross-slab LoRA adapter pushes and full-weight paths via serialized tensors, CUDA IPC (ZMQ or vLLM's native weight-transfer engine), SGLang checkpoint-engine IPC, NCCL broadcast, and a checkpoint-file handoff.
 The base engine can also receive per-track updates for composed models.
 
 The stamped policy version is behavior-version provenance only on the asynchronous paths.
 The asynchronous and agentic trainers set it to the optimizer-update count at each publication.
-The synchronous trainers do not advance it, so their frontiers keep version zero, except that the direct vLLM engine stamps its native-IPC publication count.
+The synchronous trainers do not advance it, so their frontiers keep version zero, except that the vLLM engine stamps the number of weight transfers it has received through vLLM's native weight-transfer engine.
 
 The source rejects combinations whose lifecycle has not been validated, such as a train-side rollout on a physically separate slab or selected EMA/offload combinations.
 This fail-closed policy is important because a partially awakened engine or silently stale adapter can produce plausible but invalid training data.
@@ -814,7 +824,8 @@ The reported E5-T times are \ReportedColocatedSeconds{} seconds for shared deplo
 The separate UniRL configuration is also slower than the colocated VeRL-Omni E3 configuration.
 The report attributes much of the increase to reward processing, but without the phase records we retain this as a reported diagnosis, not an isolated causal result.
 Neither this deployment penalty nor the CPU timings below establish bounded representation overhead.
-We inventory which bundle/stage/adapter code the existing E4 path uses and which trainer, scheduler, transport, and credit modules it shares. This documents reuse; reduced integration effort would require a separate held-out implementation study.
+We inventory which bundle/stage/adapter code the E4 path adds and which trainer, scheduler, transport, and credit modules it reuses unchanged, as a concrete instance of the $M+N$ composition in Section~\ref{sec:algorithm-boundary}.
+\paperTODO{Complete the E4 reuse inventory (added versus unchanged modules, with line counts at the experiment commit) and attach it as an artifact before release.}
 
 \paragraph{Preliminary executable evidence.}
 We ran a source-importing regression harness against a clean UniRL checkout at
@@ -905,7 +916,8 @@ UniRL implements a version-stamped group and publication-boundary discipline sha
 VeRL-Omni extends veRL toward diffusion, unified, and omni-modality models and integrates vLLM-Omni rollout~\citep{verlomni2026}.
 Relax is explicitly omni-native~\citep{zhang2026relax}.
 Accordingly, ``supporting image, video, or audio'' cannot be the paper's contribution.
-The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary. E4 tests one concrete workflow; a universal claim of easier integration is outside its evidence scope.
+The comparison instead asks how ancestry, typed replay state, and movement compose at the trajectory boundary.
+Because models and algorithms meet only at that boundary, they compose with $M+N$ rather than $M\times N$ integrations (Section~\ref{sec:algorithm-boundary}); E4 exercises one such composition across an AR stage and a diffusion stage.
 
 \paragraph{Diffusion RL algorithms.}
 DDPO casts denoising as a multi-step decision process~\citep{black2023ddpo}.
@@ -916,9 +928,9 @@ Its algorithm interface keeps their incompatible replay state explicit while reu
 \section{Limitations and Open Evidence}
 \label{sec:limitations}
 
-\paragraph{Integration is not automatic.}
-Each new architecture still needs a bundle, stages, conditions, and adapters for the selected rollout runtime.
-A common trajectory type does not eliminate tokenizer, scheduler, latent-layout, LoRA-target, or serving-version incompatibilities.
+\paragraph{Integration cost is per architecture.}
+Adding an architecture requires one bundle with its stages, conditions, and rollout adapters; this cost is paid once per model rather than once per model--algorithm pair.
+Architecture-specific details such as tokenizers, noise schedulers, latent layouts, and LoRA targets stay inside that bundle and its adapters rather than being abstracted by the trajectory type.
 The ordered-layer representation targets trajectories that grow by forking and observation; arbitrary ragged forests are outside its current scope.
 
 \paragraph{Topology is configured, not optimized.}
@@ -1000,6 +1012,30 @@ Async and agentic & \codepath{unirl/trainer/async\_rollout.py}, \codepath{async\
 Weight publication & \codepath{unirl/distributed/weight\_sync/}, including \codepath{full/ckpt\_engine\_ipc.py}; engine-specific receivers under \codepath{unirl/rollout/engine/} \\
 Instrumentation & \codepath{unirl/utils/profiling.py}, \codepath{memory\_monitor.py}, \codepath{wandb\_logger.py} \\
 \bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Colocated residency orders}
+\label{app:residency}
+
+Table~\ref{tab:residency-orders} lists the orders that the trainers at the audited release use on a colocated slab.
+Each satisfies the two invariants of Section~\ref{sec:lifecycle}: a due publication completes before generation, and memory is released before the role that needs it is brought up.
+
+\begin{table}[H]
+\caption{Colocated residency orders. ``Offload'' moves training state to host memory; ``sleep'' releases the engine's weight and cache memory, and ``wake'' restores it.}
+\label{tab:residency-orders}
+\centering
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}L{0.17\textwidth}L{0.21\textwidth}YL{0.21\textwidth}@{}}
+\toprule
+Order & Applies when & Before generation & After generation \\
+\midrule
+Default & AR, agentic, and prompt-enhancement trainers, unless a row below applies & Wake the engine, publish if due, offload training state if enabled & Sleep the engine, then restore training state \\
+Split wake & AR; publication due, offload enabled, engine can restore weight memory separately & Wake weight memory only, publish, offload training state, complete the wake & As default \\
+Split wake, vLLM weight transfer & As above, publishing through vLLM's native weight-transfer engine & Offload optimizer state, wake weight memory, publish, offload the model shard, complete the wake & As default \\
+Offload without publication & AR; offload enabled, no publication due & Offload training state, then wake the engine & As default \\
+Extract, then push & AR with the engine pinned to one designated GPU of the slab; unified-model trainer with separate AR and diffusion engines & Extract weights if due, offload training state if enabled, wake the engine(s), push the extracted weights & As default; a pinned AR engine with offload disabled stays awake \\
+Per-role residency & Diffusion trainers & Extract the adapter first if training will be offloaded; offload every non-resident role, wake the engine, publish if due & Sleep the engine unless the rollout role is resident; restore training state before the optimizer step \\\bottomrule
 \end{tabularx}
 \end{table}
 
