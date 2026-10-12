@@ -53,8 +53,8 @@ audited source. A correctness fix does not authorize an unrecorded recipe change
 
 ## 1. Fixed source state and repository roles
 
-- UniRL source audited by the manuscript:
-  `f5d710406b215bb7a0b387fdd37e4d4778b92338`.
+- UniRL source audited by the manuscript: release `v0.2.0`,
+  `fd344ad6036a0ba7be9900a9d0cf78ebf59fa738`.
 - Manuscript repository: this `UniRLReport` checkout. Record its commit at run
   time; do not assume the commit in this handoff is still the paper head.
 - VeRL-Omni submodule pin for the SD3.5 systems pair:

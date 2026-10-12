@@ -5,7 +5,7 @@ Last updated: 2026-10-09
 This document turns the paper's evaluation plan into a GPU-cluster execution and
 evidence protocol. It contains **no experimental results**. Values below are either
 prespecified study choices or fields read from executable source/configuration at
-UniRL commit `f5d710406b215bb7a0b387fdd37e4d4778b92338`. Before any run, re-audit
+UniRL release `v0.2.0`, commit `fd344ad6036a0ba7be9900a9d0cf78ebf59fa738`. Before any run, re-audit
 the checked-out commit and regenerate the resolved configuration.
 
 `GPU_HANDOFF_README.md` is the command-oriented companion to this document. This
@@ -497,12 +497,11 @@ be represented by a configuration file or inference-only demo without the gates 
 
 ### 9.1 HunyuanImage3 shared-backbone AR and diffusion training (E7)
 
-**Starting path:** `examples/unified_model/hi3/hi3_vllmomni.yaml` with
-`python -m unirl.train_unified_model`. This implementation was observed in a source
-checkout newer than the manuscript's audited commit. Before E7, pin the exact source
-commit, archive its diff from the audited paper commit, and re-run the applicable E0
-gates. Do not describe E7 as functionality of commit `f5d7104` unless that exact tree
-contains and passes the exercised path.
+**Starting path:** `examples/unified_model/hi3_vllmomni.yaml` with
+`python -m unirl.train_unified_model`. Both are present in the audited `v0.2.0`
+tree (`fd344ad`). If E7 runs from a later commit, pin it, archive its diff from
+`fd344ad`, and re-run the applicable E0 gates. Do not describe E7 as functionality
+of `v0.2.0` unless that exact tree contains and passes the exercised path.
 
 E7 uses one HunyuanImage3 backbone in AR text-generation and DiT image-generation
 modes. The intended trajectory is
@@ -567,12 +566,12 @@ generalization under its own name.
 ### 9.2 MiniMax H3 text-to-video-with-audio post-training (E8)
 
 MiniMax H3 generates video with stereo audio from text (T2AV). The UniRL path is
-not in the manuscript's audited commit `f5d7104`; it was introduced in UniRL PR403
-(commit `d8e4aefa`), which adds `MiniMaxH3Bundle`, `MiniMaxH3Conditions`,
-`MiniMaxH3Pipeline`, trainside rollout, and the recipe
-`diffusion/minimax_h3/minimax_h3_t2va_trainside`. Before E8, pin the exact source
-commit (PR403 or its merged successor), archive its diff from the audited paper
-commit, and re-run the applicable E0 gates. Also pin the MiniMax H3 checkpoint
+in the audited `v0.2.0` tree: PR347 (commit `a1ebf298`) adds `MiniMaxH3Bundle`,
+`MiniMaxH3Conditions`, `MiniMaxH3Pipeline`, trainside rollout, and the recipe
+`diffusion/minimax_h3/minimax_h3_t2va_trainside`; PR403 (commit `94e8f26b`) later
+replaces that recipe with the measured configuration. If E8 runs from a later
+commit, pin it, archive its diff from `fd344ad`, and re-run the applicable E0
+gates. Also pin the MiniMax H3 checkpoint
 revision, license, text encoder and hidden layer, scheduler and video/audio shifts,
 video and audio VAEs, frame-count constraint, frame rate, audio sample rate and
 channels, and resolution. Do not substitute HunyuanImage3, HunyuanVideo, or WAN

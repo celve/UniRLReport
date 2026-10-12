@@ -13,8 +13,8 @@ python -m venv /tmp/unirl-paper-venv
 PYTHONPATH=../UniRL /tmp/unirl-paper-venv/bin/python \
   experiments/trajectory_ir/run_cpu_evidence.py \
   --unirl-root ../UniRL \
-  --output-dir artifacts/trajectory_ir/cpu_f5d7104_macos_arm64 \
-  --expected-commit f5d710406b215bb7a0b387fdd37e4d4778b92338 \
+  --output-dir artifacts/trajectory_ir/cpu_fd344ad_macos_arm64 \
+  --expected-commit fd344ad6036a0ba7be9900a9d0cf78ebf59fa738 \
   --warmup 10 --repeats 100 --threads 1
 ```
 
