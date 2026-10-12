@@ -432,15 +432,20 @@ Section~\ref{sec:evaluation} therefore includes replay-consistency and failure-i
 
 The synchronous AR trainer performs rollout, reward, credit assignment, replay/update, optional evaluation, and checkpointing in order.
 The diffusion trainer can accumulate multiple rollouts into one optimizer window and can place reward on the train slab or a third slab, or score micro-batches inside the colocated rollout window so that reward overlaps generation.
-In both cases, topology affects resource ownership and residency but not the trajectory boundary.
+Topology is a placement choice made through the same scopes for every modality.
+The synchronous AR trainer builds one colocated slab, optionally pinning the engine to one of its GPUs, and the synchronous diffusion trainer additionally builds separate training and rollout slabs.
+Separate-slab AR without overlap is the asynchronous trainer with one prompt batch in flight, publication after every batch, and zero allowed lag (Section~\ref{sec:async}): it admits the next batch only after publishing the weights produced from the previous one, so generation and training strictly alternate.
+In every case, topology changes resource ownership, residency, and the publication path, but not the trajectory boundary: the same \sample{} passes from rollout through reward and credit to the train stack.
 This makes a controlled topology experiment possible: hold model, prompts, group size, reward, number of replayed steps or tokens, and optimizer updates constant while changing only engine or placement.
+The publication path and training data-parallel width change with the placement and are reported as part of it.
 
 \subsection{Bounded-staleness execution}
 \label{sec:async}
 
 Asynchrony changes correctness conditions, not just control flow.
-UniRL's asynchronous AR and diffusion trainers share one manager.
-A background dispatcher fills every engine slot up to a configured per-worker capacity.
+UniRL's asynchronous AR and diffusion trainers run on separate training and rollout slabs and share one manager.
+The driver submits whole prompt batches only while they fit the in-flight capacity, the freshness horizon implied by the staleness allowance, and the batches remaining before the next evaluation, checkpoint, or final boundary.
+A background dispatcher then fills every engine slot up to a configured per-worker capacity.
 Completed trajectories are grouped by root; only complete groups enter the ready buffer.
 Every generated part must carry an output policy version $v_o$.
 
@@ -449,13 +454,15 @@ The manager exposes lag in update units,
 \begin{equation}
 \ell = v_t-v_o \leq u b,
 \end{equation}
-where $b$ is the staleness allowance in rollout-batch units (configurable for AR, fixed to the publication interval minus one for diffusion); the filter rejects work beyond that budget.
+where $b$ is the staleness allowance in rollout-batch units (configurable for AR, fixed to the publication interval minus one for diffusion).
+The filter measures each trajectory by its oldest generated part and discards whole root groups beyond that budget, including incomplete roots held across a publication.
 Because a skipped non-finite step does not advance $v_t$, admitted work can be more than $b$ rollout batches old.
 Before publishing version $v_t$, it pauses admission, drains or suspends work, completes any started or batch-aligning prefix, checks that no publication splits a training batch across behavior versions, publishes weights, updates the rollout version, and then resubmits eligible pristine carry.
 Evaluation and checkpointing require a fully empty manager.
 
 This discipline differs from claiming fully asynchronous optimization.
-Weight publication remains a barrier, and the current asynchronous diffusion path deliberately limits in-flight batch structure more tightly than the AR path.
+Weight publication remains a barrier.
+The asynchronous diffusion trainer admits one prompt batch at a time and requires each training batch to come from a single generation request, so its next generation overlaps only the optimizer step; the AR trainer may keep several batches in flight and refills before reward scoring.
 The evaluation must report the actual lag histogram, dropped work, and barrier time; a nominal ``async'' label is insufficient.
 
 \section{Instantiations of the Common Contracts}
