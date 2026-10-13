@@ -1,0 +1,22 @@
+# Overleaf Connect
+.overleafconnect
+*.aux
+*.log
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.out
+*.toc
+*.pdf
+!artifacts/reported_results/**/figures/*.pdf
+*.nav
+*.snm
+*.vrb
+*.lot
+*.lof
+__pycache__/
+*.py[cod]
+.DS_Store
+%OUTDIR%/
