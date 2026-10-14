@@ -61,15 +61,12 @@ Across Heterogeneous Generative Models}
 \begin{abstract}
 Reinforcement-learning systems share an outer loop---generate, score, assign credit, and update---yet their implementations fragment because autoregressive tokens, diffusion trajectories, multimodal values, and multi-stage rollouts carry different state and impose different execution constraints.
 We present \system, a trajectory-centric system that places a lineage-preserving, modality-aware intermediate representation at the boundary between post-training semantics and distributed execution.
-A trajectory batch is a sequence of typed layers, one per depth of a forest of prompt-rooted trees, carrying decoded values, model conditions, replay segments, rewards, and behavior-policy versions.
-A rollout request is a skeleton of such layers whose generated layers are still empty shells, and every engine fills them through one $\sample\!\rightarrow\!\sample$ transformation.
-The same trajectory can carry autoregressive and diffusion stages linked by lineage, while logical roles, placement, tensor transport, weight publication, and memory residency determine how the fill executes.
-These contracts factor model-specific replay from lineage, movement, placement, and scheduling decisions; they do not assert that the underlying objectives or every engine--topology combination are interchangeable.
-The design is grounded in a source audit of UniRL release v0.2.0 (commit \texttt{fd344ad}); subsequent experiment reports provide initial GPU evidence.
-Three-seed diffusion results show improved held-out automatic scores together with reduced within-prompt diversity, while an eight-GPU native-recipe comparison reports lower iteration time than VeRL-Omni.
-A separate, single-run, recipe-matched 500-step Qwen3-4B GRPO comparison records 8.2\% higher end-to-end output-token throughput for UniRL than veRL while generating 11.0\% longer responses.
-A source-importing CPU harness exercises ten core IR invariants.
-The present evaluation distinguishes legacy report-derived measurements from the newly regenerated AR systems evidence: the primary AR quality endpoint, real-rollout lineage validation, paired representation cost, and a controlled time-to-quality result remain open.
+Each trajectory is a prompt-rooted tree of typed generation stages, recording decoded outputs, conditioning inputs, stage-specific replay state, rewards, and the behavior-policy version of each stage.
+Three components share that representation: rollout engines fill each generation stage, scoring propagates rewards and credit along tree ancestry, and training backends replay each stage's objective under a chosen placement, tensor transport, weight publication, and memory residency.
+These interfaces keep model-specific replay separate from lineage tracking, data movement, and scheduling, without collapsing heterogeneous objectives or engine--topology pairs into one kernel.
+We implement this design in \system v0.2.0.
+Diffusion post-training improves held-out automatic scores, while an eight-GPU native-recipe comparison reports lower iteration time than VeRL-Omni.
+In a recipe-matched 500-step Qwen3-4B GRPO comparison, \system records 8.2\% higher end-to-end output-token throughput than veRL, and a source-importing CPU harness passes ten core IR checks.
 \end{abstract}
 
 \section{Introduction}
@@ -82,29 +79,30 @@ Their data paths do not.
 An autoregressive update may need packed token IDs, masks, rollout log probabilities, and per-token values; a diffusion update may need a sparse set of latent states, a noise schedule, and transition statistics; a composed workflow must retain which image descended from which rewritten prompt; an asynchronous run must additionally retain which policy version generated every sample.
 
 Existing systems have made major progress on scalable LLM post-training and flexible device mapping~\citep{sheng2024hybridflow,hu2024openrlhf,wang2025roll,nemorl2025}.
-Fully or partially asynchronous systems address rollout tail latency and accelerator idle time~\citep{fu2025areal,zhang2026relax,slime2025}.
-Meanwhile, diffusion RL methods and multimodal frameworks broaden the optimization and model families that can be trained~\citep{black2023ddpo,liu2025flowgrpo,xue2025dancegrpo,zheng2025diffusionnft,verlomni2026}.
+Fully or partially asynchronous systems further address rollout tail latency and accelerator idle time~\citep{fu2025areal,zhang2026relax,slime2025}.
+Post-training is now expanding from single-stage text generation to iterative diffusion denoising and multi-stage multimodal pipelines~\citep{black2023ddpo,liu2025flowgrpo,xue2025dancegrpo,zheng2025diffusionnft,verlomni2026}.
+Those stages differ in modality, replay state, and branching factor while still sharing ancestry for conditioning and credit assignment, so flat LLM-specific tensor dictionaries no longer suffice.
 The remaining design question is how the information shared by these workflows should survive changes in their model-specific state and execution paths.
 
 \begin{quote}
 \emph{Can one post-training program cross generative model families and execution topologies while retaining the structure needed for correct grouping, replay, credit assignment, transport, and policy-version control?}
 \end{quote}
 
-Its answer is to make a trajectory intermediate representation (IR) the stable semantic object, then expose execution choices as explicit contracts around that object.
-The IR makes a complete prompt-rooted lineage, rather than an individual row or an LLM-specific tensor dictionary, the unit of scheduling and sharding.
-Typed leaves distinguish decoded multimodal values from model conditions and optimization segments.
-Distributed methods declare how each structured field scatters, concatenates, packs, or remains shared.
-Dense tensors can be replaced by row-addressable references without changing the trajectory structure.
-This representation is passed through a small set of logical roles and can be mapped to colocated or disjoint GPU slabs.
+\system answers this by introducing a \emph{trajectory intermediate representation (IR)}---a representation for stages that differ in modality and batch size---and exposing execution choices as explicit contracts around that representation.
+Rather than treating an individual row or an LLM-specific tensor dictionary as the unit of scheduling and sharding, the IR organizes each batch as a forest of prompt-rooted trees whose width grows when a stage branches.
+Within each layer, typed leaves separate decoded multimodal values, model conditions, and per-stage replay state.
+Distributed methods declare how each structured field scatters, concatenates, packs, or remains shared, and dense tensors can be replaced by row-addressable references without changing the trajectory structure.
+This representation flows through a small set of logical roles that can be mapped onto colocated or disjoint GPU slabs.
 
-The paper develops two coupled design ideas:
+The paper develops three coupled design ideas:
 
 \begin{itemize}
-  \item A \emph{lineage-preserving trajectory IR} in which a rollout request is a typed tree skeleton that can span autoregressive and diffusion stages, each generated layer is conditioned through its ancestry and keeps its own replay segment, and training folds reward and credit back along the same tree (Section~\ref{sec:trajectory}). Synthetic equality checks provide initial semantic evidence; recorded-rollout validation and the primary AR quality endpoint remain open alongside the reported diffusion results.
-  \item A \emph{factorization of semantic roles from physical execution}: rollout remains one $\sample\!\rightarrow\!\sample$ fill of that skeleton, while field-aware dispatch, tensor references, placement, weight publication, and residency specify its execution (Section~\ref{sec:execution}). Native-recipe, recipe-matched AR, and internal topology comparisons provide initial performance observations; the paired representation-cost control remains unmeasured.
+  \item A \emph{lineage-preserving trajectory IR} in which a rollout request is a typed tree skeleton spanning autoregressive and diffusion stages, each generated layer is conditioned through its ancestry and keeps its own replay state, and training folds reward and credit back along the same tree (Sections~\ref{sec:trajectory-layers}--\ref{sec:fold}).
+  \item A \emph{modular interface for stage replay and optimization} that separates trajectory layers from stage-specific losses and distributed training stacks, so $M$ model bundles and $N$ shared algorithms require $M+N$ integrations rather than $M\times N$ (Sections~\ref{sec:algorithm-boundary} and~\ref{sec:instantiations}).
+  \item A \emph{factorization of semantic roles from physical execution}: rollout remains one $\sample\!\rightarrow\!\sample$ fill of the trajectory skeleton, while field-aware dispatch, tensor references, placement, weight publication, and memory residency govern how those roles run on colocated, disaggregated, and asynchronous topologies (Section~\ref{sec:execution}).
 \end{itemize}
 
-Asynchronous execution is where the second idea pays off most directly.
+Asynchronous execution is where the third idea pays off most directly.
 Because rollout, reward, and training are logical roles rather than fixed steps of one loop, the orchestration layer---admission, root-complete grouping, version stamping, lag filtering, and weight publication---can be lifted out of individual trainers.
 UniRL's AR and diffusion trainers therefore share one bounded-staleness manager over the same trajectory IR (Section~\ref{sec:async}), and we exercise it on both workloads.
 For AR, single-seed capacity measurements with overlap enabled show lower per-rollout time than synchronous colocated rollout; the accompanying quality pilot did not pass, so no time-to-quality benefit is claimed (Section~\ref{sec:rq4}).
@@ -122,7 +120,7 @@ These observations do not establish a cross-workload or time-to-quality advantag
 \section{Problem: Preserve Semantics While Changing Execution}
 \label{sec:problem}
 
-Let an online post-training iteration consume a batch of roots $X$, sample trajectories with behavior policy $\pi_v$, obtain reward $r$, construct credit $A$, and update parameters $\theta$:
+Let an online post-training iteration consume a batch of initial inputs $X$, such as text prompts or multimodal contexts, sample trajectories with behavior policy $\pi_v$, obtain reward $r$, construct credit $A$, and update parameters $\theta$:
 \begin{equation}
 X \xrightarrow{\pi_v} \mathcal{T}
   \xrightarrow{R} (\mathcal{T},r)
@@ -183,6 +181,7 @@ The present runtime uses a driver to sequence roles and Ray actors~\citep{moritz
 \label{sec:trajectory}
 
 \subsection{A trajectory batch is a sequence of tree layers}
+\label{sec:trajectory-layers}
 
 The central type is
 \begin{equation}
@@ -346,20 +345,29 @@ The trainer selects the layer by its sampling-parameter type and skips frozen la
 In the composed prompt-enhancement workflow, the AR and diffusion models have separate stacks and optimizer steps; freezing the rewrite model, as E4 does, trains only the diffusion track.
 When both layers belong to one backbone, as in HunyuanImage-3, a unified stack back-propagates the AR and image losses through one shared optimizer step.
 
-\subsection{The algorithm boundary preserves specialized replay}
+\subsection{Component interfaces for stage replay and optimization}
 \label{sec:algorithm-boundary}
 
-Within a track, the algorithm consumes its layer's conditions, segment, and advantages.
-A train stack owns microbatch planning, gradient accumulation, global loss normalization, gradient clipping, optimizer steps, and per-update aggregation.
-An algorithm object owns the stage-specific map
+Once credit is attached, each training track has three interfaces.
+
+\paragraph{Trajectory layer.}
+The layer supplies $(C_i, Z_i, A_i)$ for stage $i$: model-facing conditions $C_i$, the replay segment $Z_i$ (a \texttt{TextSegment} or a \texttt{LatentSegment}), and precomputed advantages $A_i$.
+
+\paragraph{Stage algorithm.}
+The algorithm defines the objective
 \begin{equation}
-(C,Z,A;\theta) \longmapsto \mathcal{L}\quad\text{and backward}.
+(C,Z,A;\theta) \longmapsto \mathcal{L}\quad\text{and backward},
 \label{eq:algorithm}
 \end{equation}
-The loss itself sees only its layer's conditions, segment, and advantages; an optional per-shard preparation hook may read the layer's whole part (for example, per-row metadata or critic values), and some algorithms additionally hold a backend handle for reference or EMA weights.
-Before repeated optimizer updates, the stack can freeze an old-policy anchor at the same microbatch geometry used for training.
-AR objectives replay token log probabilities; diffusion objectives replay selected transitions and may compare rollout statistics, a pre-update replay, or a reference model.
-Supervised and teacher-distillation objectives explicitly opt out of advantages; the forward-process DiffusionNFT objective still consumes group advantages.
+over one shard's conditions, replay segment, and advantages.
+The loss depends only on $(C,Z,A)$.
+An optional per-shard preparation hook may read the full layer \parttype{}, for example per-row metadata or critic values, and an algorithm that needs reference or EMA weights holds an explicit backend handle.
+
+\paragraph{Train stack.}
+The stack plans microbatches, can freeze an old-policy replay anchor at the training microbatch geometry before repeated updates, accumulates and clips gradients, normalizes global losses, and steps the optimizer.
+
+Under this split, AR objectives replay token log probabilities from \texttt{TextSegment}s, and diffusion objectives replay selected denoising transitions from \texttt{LatentSegment}s, comparing them with rollout statistics, a pre-update replay, or a reference model.
+Supervised and teacher-distillation objectives do not use $A$; the forward-process DiffusionNFT objective consumes group advantages through the same signature.
 
 Because models and algorithms meet only at this data boundary, they compose without pairwise adaptation.
 A model is integrated once, as a bundle whose stages fill and replay typed segments; an algorithm is written once, as a loss over a stage's replay of those segments.
