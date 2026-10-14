@@ -59,14 +59,14 @@ Across Heterogeneous Generative Models}
 \maketitle
 
 \begin{abstract}
-Reinforcement-learning systems share an outer loop---generate, score, assign credit, and update---yet their implementations fragment because autoregressive (AR) tokens, diffusion trajectories, multimodal values, and multi-stage rollouts carry different state and impose different execution constraints.
+Reinforcement-learning post-training for generative models follows a common semantic loop---generate, score, assign credit, and update---yet existing systems fragment across autoregressive, diffusion, and multi-stage multimodal workflows, which require different replay state, lineage tracking, and execution topologies.
 We present UniRL, a trajectory-centric system that places a lineage-preserving, modality-aware intermediate representation (IR) at the boundary between post-training semantics and distributed execution.
-Each trajectory is a prompt-rooted tree of typed generation layers, recording decoded outputs, conditioning inputs, stage-specific replay segments, rewards, and the behavior version of each layer.
-Three components share that representation: rollout engines fill each generation layer, scoring propagates rewards and credit along tree ancestry, and training backends replay each stage's objective under a configured placement, tensor transport, weight publication, and memory residency.
-These interfaces keep model-specific replay separate from lineage tracking, data movement, and scheduling, without collapsing heterogeneous objectives or engine--topology pairs into one kernel.
-We implement this design in UniRL v0.2.0 and examine its reward-serving and rollout-engine boundaries through two image-editing case studies on generation--reward overlap and conditioning fidelity.
+Each trajectory is a prompt-rooted tree of typed generation layers that records each layer's decoded outputs, conditioning inputs, stage-specific replay segment, rewards, and behavior-policy version.
+Three logical roles operate on this representation---rollout engines populate generation layers, reward and credit operators evaluate and fold feedback along tree ancestry, and training backends replay stage-specific objectives---while explicit runtime contracts govern device placement, tensor transport, weight publication, and memory residency.
+These interfaces decouple model-specific replay from lineage tracking, data movement, and scheduling, without forcing heterogeneous objectives or engine--topology pairs into a monolithic trainer.
+We implement this design in UniRL v0.2.0, validate ten core IR invariants in a source-importing CPU harness, and examine its reward-serving and rollout-engine boundaries through two image-editing case studies on generation--reward overlap and conditioning fidelity.
 Diffusion post-training improves held-out automatic scores, while an eight-GPU native-recipe comparison reports lower iteration time than VeRL-Omni.
-In a recipe-matched 500-rollout Qwen3-4B-Base Group Relative Policy Optimization (GRPO) comparison, UniRL records 8.2\% higher end-to-end output-token throughput than veRL on runs executed concurrently on separate cluster nodes, with UniRL sampling 11.0\% longer responses and a higher 8,192-token truncation rate (0.307 vs.\ 0.203); a source-importing CPU harness passes ten core IR checks.
+In a recipe-matched 500-rollout Qwen3-4B-Base Group Relative Policy Optimization (GRPO) comparison, UniRL records 8.2\% higher end-to-end output-token throughput than veRL on runs executed concurrently on separate cluster nodes, with UniRL sampling 11.0\% longer responses and a higher 8,192-token truncation rate (0.307 vs.\ 0.203).
 \end{abstract}
 
 \section{Introduction}
