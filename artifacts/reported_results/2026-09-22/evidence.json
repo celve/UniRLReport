@@ -94,7 +94,7 @@
       },
       {
         "id": "pickscore",
-        "name": "PickScore",
+        "name": "PickScore (training reward)",
         "role": "optimized objective",
         "base": null,
         "final": null,
@@ -108,7 +108,7 @@
       },
       {
         "id": "composition",
-        "name": "Composition (VQAScore)",
+        "name": "Synthetic composition (Soft-TIFA)",
         "role": "synthetic compositional check",
         "base": "0.1011",
         "final": "0.1552",
@@ -237,6 +237,17 @@
       "note": "Single training seed; not the prespecified external MATH-500 endpoint."
     },
     {
+      "id": "e1_grpo_peak",
+      "experiment": "E1",
+      "metric": "internal AIME validation / GRPO / rollout 280 peak",
+      "value": "0.126",
+      "macro": "EOneGRPOPeak",
+      "source_ids": [
+        "notion-20260922",
+        "pr2-ecce5097"
+      ]
+    },
+    {
       "id": "e1_grpo_final",
       "experiment": "E1",
       "metric": "internal AIME validation / GRPO / rollout 800",
@@ -254,6 +265,17 @@
       "macro": "EOneDRPOBase",
       "source_ids": [
         "notion-20260922"
+      ]
+    },
+    {
+      "id": "e1_drpo_peak",
+      "experiment": "E1",
+      "metric": "internal AIME validation / DRPO / rollout 400 peak",
+      "value": "0.227",
+      "macro": "EOneDRPOPeak",
+      "source_ids": [
+        "notion-20260922",
+        "pr2-ecce5097"
       ]
     },
     {

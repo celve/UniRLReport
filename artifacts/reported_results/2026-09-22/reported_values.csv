@@ -29,8 +29,10 @@ E3,throughput,verl_fa3,,reported_aggregate,3079,samples_per_gpu_hour,notion-2026
 E5-T,iteration_time,colocated,,reported_aggregate,64.223,seconds,pr2-ecce5097;notion-20260922
 E5-T,iteration_time,separate,,reported_aggregate,146.244,seconds,pr2-ecce5097;notion-20260922
 E1,internal AIME validation / GRPO / base,e1_grpo_base,,reported_exploratory,0.0208,score,notion-20260922
+E1,internal AIME validation / GRPO / rollout 280 peak,e1_grpo_peak,,reported_exploratory,0.126,score,notion-20260922;pr2-ecce5097
 E1,internal AIME validation / GRPO / rollout 800,e1_grpo_final,,reported_exploratory,0.0177,score,notion-20260922
 E1,internal AIME validation / DRPO / base,e1_drpo_base,,reported_exploratory,0.0250,score,notion-20260922
+E1,internal AIME validation / DRPO / rollout 400 peak,e1_drpo_peak,,reported_exploratory,0.227,score,notion-20260922;pr2-ecce5097
 E1,internal AIME validation / DRPO / rollout 800,e1_drpo_final,,reported_exploratory,0.159,score,notion-20260922
 E4a,synthetic semantic checks passing in each scope,e4a_checks,,reported_exploratory,24,count,notion-20260922
 E6,reported MATH-500 / rollout 150,e6_quality_early,,reported_exploratory,0.798,score,notion-20260922
