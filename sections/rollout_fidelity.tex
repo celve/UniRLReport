@@ -1,161 +1,146 @@
 % Numbers come from artifacts/reported_results/2026-10-04-rollout-fidelity/ (see its README).
 \input{artifacts/reported_results/2026-10-04-rollout-fidelity/macros.tex}
 
-\section{Rollout Fidelity and Request Shaping}
+\section{Case Study II: Rollout Fidelity and Request Shaping}
 \label{sec:fidelity}
 
-Section~\ref{sec:reward} took the generated sample as given and asked where its reward should be computed.
-This section looks at the sample itself.
-Two properties of a rollout decide whether the reward and the gradient refer to the same thing, and what the rollout costs: the engine and the trainer must condition on the same sequence, and the engine's request must be shaped so that one request is not one sample when a group of siblings would do.
-Both are visible only through the engine's own boundary, which is where a lineage-preserving trajectory does not help: the \sample{} that comes back is well formed either way.
+Whereas Section~\ref{sec:reward} examined how generated trajectories are scored, this case study examines the boundary between the trajectory IR and an external rollout engine.
+Two properties at the engine boundary govern whether optimization updates match the scored behavior and how efficiently rollouts execute: first, the rollout engine and the training backend must condition on identical context representations; second, requests sent to the engine should pack sibling samples under a shared prompt so that prompt conditioning is encoded once per group rather than once per sample.
+Because a rollout adapter returns a structurally well-formed \sample{} regardless of how the engine internally constructs its conditioning or batches requests, verifying these properties requires explicit checks and request-shaping contracts across the engine boundary.
 
 \paragraph{Source scope.}
-Four changes to the vLLM-Omni BAGEL path, proposed as UniRL pull requests~\#547--\#550 and open at the time of writing.
-They are stacked in that order and must land in it.
-Every measurement below is ours, on one eight-GPU H20 node, and the per-run records and generator are under \codepath{artifacts/reported\_results/2026-10-04-rollout-fidelity/}.
-The scheduling experiment of Section~\ref{sec:fidelity-tail} is on a branch with no pull request.
+This case study examines four stacked changes to the vLLM-Omni BAGEL rollout path proposed in UniRL pull requests~\#547--\#550 (open at the time of writing), affecting both text-to-image (\texttt{t2i}) and instruction-guided image-to-image editing (\texttt{it2i}) workloads.
+All measurements below were collected on a single node of eight NVIDIA H20 GPUs, with per-run records and table generators archived under \codepath{artifacts/reported\_results/2026-10-04-rollout-fidelity/}.
+The dynamic load-balancing prototype evaluated in Section~\ref{sec:fidelity-tail} was measured on an experimental branch without an open pull request.
 
-\subsection{A conditioning mismatch that the importance ratio could not see}
+\subsection{Conditioning Mismatch Undetected by the Importance Ratio}
 \label{sec:fidelity-layout}
 
-In image editing the policy conditions on a source image.
-UniRL builds that conditioning itself---its own image transforms, its own encoder---and injects the resulting key--value contexts into the serving engine, because the trainer rebuilds the same contexts when it replays the sample.
-Since the engine was migrated to a newer serving version, three helpers in the BAGEL pipeline kept reading a field of the request \emph{batch} after the caller had already unwrapped it to a single request.
-The field was therefore always absent, the source image was never found, the injection never ran, and the engine fell back to its own image-to-image path: a different image transform at a fixed resolution, a sampled rather than an averaged latent, and the source's dimensions as the output canvas.
+In instruction-guided image editing (\texttt{it2i}), the policy conditions on a source image alongside the edit instruction.
+To guarantee rollout--replay consistency, UniRL constructs this conditioning on the worker---applying its own image transforms and vision encoder---and injects the resulting key--value contexts directly into the vLLM-Omni serving engine so that the trainer replays against identical contexts during optimization.
+Following an upstream serving-engine migration, however, three helper functions in the BAGEL pipeline continued to read the injected conditioning field from the outer request-batch wrapper after the caller had already unwrapped it to an individual request object.
+Because the looked-up attribute was absent on the unwrapped object, the injected contexts were silently ignored, and the serving engine fell back to its internal image-to-image preprocessing path---using a different image transform at a fixed resolution, a sampled rather than mean latent encoding, and an output canvas sized to the source image rather than the recipe target.
 
-Nothing in the training loop noticed: every image-editing rollout on this path was generated under one conditioning and replayed under another, with a \RFWorkerKv{}-token prefix on the engine against \RFTrainerKv{} on the trainer at the same source size.
-Why it went unnoticed bears on what a parity check has to measure.
-The natural check is the importance ratio: before the first optimizer step of a rollout, the policy has not moved, so the ratio against its own behavior anchor should be 1 up to numerical noise.
-It was.
-With the mismatch the largest first-update deviation was $\RFRatioBuggy\times10^{-5}$; without it, $\RFRatioHealthy\times10^{-5}$; a healthy image-editing run reached $\RFRatioHealthyEdit\times10^{-5}$ (Table~\ref{tab:fidelity-layout}), so the mismatched run lay inside the healthy range.
-The cause is how the log-probability of a denoising transition is reduced.
-Both the engine and the trainer average the Gaussian log-density of a transition over every latent element instead of summing it, so a difference in the predicted mean, even one large enough to change what is generated, reaches the ratio divided by the number of latent elements, which is in the tens of thousands at $512\times512$.
-Under this reduction the ratio cannot separate a conditioning mismatch from numerical noise.
-A summed log-probability would not dilute the difference in this way; we have not measured whether the mismatch would then be visible.
-Under the recipes' default anchor, which recomputes the old log-probabilities from the trainer itself, the ratio is identically 1 and could not have seen anything at all.
+Despite this bug, training completed without raising an error: every image-editing rollout generated samples under the engine's fallback conditioning (\RFWorkerKv{} context tokens) and replayed them under the trainer's conditioning (\RFTrainerKv{} context tokens at the same $512\times512$ source resolution).
+Notably, standard importance-ratio monitoring did not flag the discrepancy.
+Before the first optimizer update of a rollout, the current policy $\theta$ equals the behavior policy $\pi_v$, so the importance ratio $\rho$ against the rollout behavior anchor should equal 1 up to floating-point noise.
+In practice, the observed ratio remained close to 1 despite the mismatch: the maximum first-update deviation $|\rho - 1|$ was $\RFRatioBuggy\times10^{-5}$ with the conditioning bug versus $\RFRatioHealthy\times10^{-5}$ after the fix, well within the $\RFRatioHealthyEdit\times10^{-5}$ deviation observed in healthy image-editing runs (Table~\ref{tab:fidelity-layout}).
+This insensitivity arises from how denoising transition log probabilities are reduced.
+Both the rollout engine and the trainer compute the Gaussian log-density of each denoising transition by averaging over all latent elements rather than summing across them; consequently, a perturbation to the predicted velocity mean---even one large enough to alter the generated image---is divided by the number of latent dimensions (tens of thousands of elements at $512\times512$ resolution) before entering the log-probability ratio.
+Under element-mean reduction, the importance ratio cannot distinguish a structural conditioning mismatch from benign numerical noise.
+Moreover, when a recipe uses the trainer-recomputed replay anchor (the default in several diffusion configurations), the baseline log probabilities are recomputed on the trainer itself, making the first-update ratio identically 1 by construction.
 
-What does see it is a structural check.
-The engine already hands the driver a hook where the driver's initial noise is substituted; the same hook now records three integers and the canvas---the length of the generation context, its positional offset, and the rendered size---which ride the existing capture channel into the trajectory's model conditions and are compared, per row, against the context the trainer rebuilds at replay.
-A mismatch raises at the first replay, with both sides printed.
-It costs nothing, because replay builds that context anyway, and conditions that carry their own contexts are not checked.
-Table~\ref{tab:fidelity-layout} lists what it catches.
-The ratio guard is kept as a second, coarser check, opt-in through a tolerance and warning rather than raising: it is meant for a policy that is not the one that generated the rollout---unsynchronized weights, the wrong adapter---and, with the averaged log-probability, does not detect a conditioning mismatch.
+To detect such discrepancies directly, UniRL adds a structural token-layout check across the rollout--replay boundary (UniRL pull request~\#548).
+The engine hook that injects initial noise now also records three integers and the output canvas dimensions---the generation context token length, its positional offset, and the rendered height and width---which are returned through the capture channel into the trajectory's model conditions $C_i$ and compared row-by-row against the context reconstructed by the trainer during replay.
+Any discrepancy raises an exception on the first replay pass and logs both layouts.
+Because the trainer already constructs the replay context, the check adds zero tensor-compute overhead; conditioning paths that carry pre- materialized contexts bypass the check.
+Table~\ref{tab:fidelity-layout} summarizes the validation probes caught by this check.
+The importance-ratio check is retained as an optional secondary diagnostic for detecting weight-publication desynchronization or mismatched LoRA adapters, where the model weights themselves differ between rollout and replay.
 
 \begin{table}[H]
-\caption{Probes of the token-layout check. Lengths are tokens of the generation context on the engine and on the trainer. The last column is the largest first-update deviation of the importance ratio from 1 in the same run, which is the check this replaces.}
+\caption{Validation probes for the structural token-layout check across text-to-image (\texttt{t2i}) and image-to-image editing (\texttt{it2i}) paths. ``Engine'' and ``Trainer'' columns report the generation-context token counts on each side. The final column reports the maximum first-update importance-ratio deviation $|\rho-1|$ in the same run.}
 \label{tab:fidelity-layout}
 \centering
 \small
 \input{artifacts/reported_results/2026-10-04-rollout-fidelity/layout_table.tex}
 \end{table}
 
-Restoring the injection changed the rollout twice over.
-Generation of sixteen edits on one rank fell from \RFMainGenerate{}\,s to \RFFixGenerate{}\,s, because the engine's own path encodes the source into four times as many tokens as UniRL's.
-And the judge's verdict on the result moved: the mean EditScore of the first rollout, before any optimizer step and on the same prompts, went from \RFMainReward{} to \RFFixReward{} (Figure~\ref{fig:fidelity-chain}).
-That second number is not a learning result---no update had happened---but a measure of what the engine produces under each conditioning.
+Restoring the injected conditioning (UniRL pull request~\#547) affected both rollout latency and initial judge scores.
+Generation time for 16 edits per rank decreased from \RFMainGenerate{}\,s to \RFFixGenerate{}\,s (\RFFixSaving{}), because the engine's fallback path encoded the source image into nearly four times as many vision tokens as UniRL's encoder path (\RFWorkerKv{} versus \RFTrainerKv{} total context tokens).
+Simultaneously, the mean EditScore reward on the first rollout---evaluated on identical prompts prior to any optimizer update---increased from \RFMainReward{} to \RFFixReward{} (Figure~\ref{fig:fidelity-chain}), reflecting the quality difference between the two conditioning representations on the pretrained checkpoint.
 
-\subsection{A canvas per group}
+\subsection{Per-Group Output Canvas Resolution}
 \label{sec:fidelity-canvas}
 
-A rollout batch has had one output resolution, fixed by the recipe, because the trajectory's latent field is one dense tensor and the engine is given one size.
-Production prompt sets are not like that: a dataset of real prompts carries its own natural sizes, and training at one of them either wastes compute on prompts that do not need it or refuses the ones that do.
+Previously, every rollout batch required a single uniform output resolution fixed by the recipe, because the trajectory's latent segment stores latents as a single dense tensor and the rollout adapter passed a single canvas size to the engine.
+Production prompt datasets, however, contain prompts with varying target aspect ratios and resolutions; forcing a single resolution either wastes compute on low-resolution prompts or truncates high-resolution ones.
 
-A dataset row may now carry its own canvas in its metadata.
-The trajectory resolves the canvas per frontier row from its root, falling back to the recipe's size, and the engine's adapter sends one call per contiguous run of same-canvas rows.
-The latent field stays dense: a smaller canvas's trajectory is right-padded to the default canvas's token count and the replay trims it back, so the recipe's size is an upper bound and a larger canvas is rejected.
-A prompt group keeps one canvas, which is what leaves credit assignment, the reward micro-batches of Section~\ref{sec:reward-overlap} and the scorers untouched.
-No configuration key is added, and a dataset without the field produces the calls it produced before.
-Engines that render one size per request---the train-side one, the other serving adapters, the composed and video paths---reject the field by name instead of ignoring it, which matters because ignoring it would train on images of a size nobody asked for.
+UniRL pull request~\#549 allows each dataset example to specify its own target canvas dimensions in its metadata $M_0$.
+During rollout, the trajectory resolves the target canvas for each frontier row from its root ancestor (falling back to the recipe default), and the rollout adapter dispatches one engine call per contiguous run of rows sharing the same canvas size.
+To keep the latent segment tensor dense across a mixed-resolution batch, smaller canvases are right-padded along the token dimension to match the recipe's maximum canvas size, and the trainer slices each row back to its true token count during replay; canvases exceeding the recipe maximum are rejected at admission.
+Because all sibling samples forked from a root prompt share the same canvas, group-relative credit assignment, the micro-batched \texttt{RewardStack} of Section~\ref{sec:reward-overlap}, and downstream scorers require no modification.
+Datasets without per-example canvas metadata execute identically to the fixed-resolution path.
+Rollout backends that support only a single resolution per batch---including the train-side diffusion adapter, non-BAGEL serving adapters, and video pipelines---explicitly reject the per-row canvas metadata field rather than silently rendering at the default resolution.
 
-The mechanism is bounded in a way worth recording.
-It supports the algorithm family whose replay anchor is a scalar per transition.
-Objectives that store an anchor per token, and those that read the latent field directly, still need one canvas per rollout; they now fail with a named error where they used to fail on a tensor size.
+This padding scheme applies to objectives whose replay anchor stores a single scalar per denoising transition (such as Flow-GRPO).
+Objectives that store per-token replay anchors or consume the dense latent field directly still require a uniform canvas across the batch and now fail fast with a descriptive error when given mixed-canvas inputs.
 
 \begin{table}[H]
-\caption{Cost of one group of four siblings at three canvases, seconds, on one rank. Image editing additionally encodes a $512\times512$ source. The $768\times768$ text-to-image cell was measured on an earlier revision of the same branch.}
+\caption{Generation time (seconds) for one prompt group of four sibling samples across three output canvas resolutions on a single H20 rank, for image-to-image editing (\texttt{it2i}, which additionally encodes a $512\times512$ source image) and text-to-image generation (\texttt{t2i}). The $768\times768$ \texttt{t2i} entry was measured on an earlier commit of the same branch.}
 \label{tab:fidelity-canvas}
 \centering
 \small
 \input{artifacts/reported_results/2026-10-04-rollout-fidelity/canvas_table.tex}
 \end{table}
 
-Table~\ref{tab:fidelity-canvas} is the reason mixed resolution is a scheduling problem and not only a capability.
-Cost is close to linear in image tokens, and the span between the cheapest and the most expensive canvas in one batch is a factor of four.
-With two groups per rank drawn from a mixed dataset, the slowest rank of a rollout took \RFTailMin{} to \RFTailMax{} times the mean across ranks, and every rank waits for the slowest.
+Table~\ref{tab:fidelity-canvas} shows that generation latency scales approximately linearly with the number of image tokens, creating a $4\times$ cost difference between $512\times512$ and $1{,}024\times1{,}024$ canvases within the same batch.
+When each data-parallel rank receives two prompt groups drawn in dataset order from a mixed-resolution prompt set, the slowest rank requires \RFTailMin{}--\RFTailMax{}$\times$ the mean per-rank generation time, and the synchronous rollout barrier forces all other ranks to wait.
 
-\subsection{One request per group of siblings}
+\subsection{Sibling Request Packing for Image Editing}
 \label{sec:fidelity-pack}
 
-Group-relative credit needs several samples per prompt, and for image editing each of those samples was its own engine request.
-Every request rebuilt the same three contexts from the same source image, encoder passes included.
-Where the guidance scales allow it, the adapter now sends one request per contiguous run of a group's rows, and the engine builds the contexts once and replicates the generation context per sibling.
-Generation of sixteen edits per rank fell from \RFCanvasGenerate{}\,s with the per-group canvas alone to \RFPackGenerate{}\,s, about \RFPackSaving{} (Table~\ref{tab:fidelity-chain}), for roughly two gibibytes more peak memory per GPU; one group of eight went from \RFUnpackedGroupEight{}\,s to \RFPackedGroupEight{}\,s.
-Text-to-image already packed and is unchanged.
+Group-relative credit assignment generates multiple sibling samples per prompt.
+In the original BAGEL image-editing adapter, each sibling sample was dispatched as an independent engine request, causing the engine to recompute the same vision-encoder passes and key--value conditioning contexts for every sibling in the group.
+With sibling request packing (UniRL pull request~\#550), when guidance scales permit, the adapter consolidates contiguous sibling rows from the same prompt group into a single engine request; the engine encodes the source conditioning once and broadcasts the resulting context across all siblings in the group.
+At 16 edits per rank ($512\times512$), packing reduces per-rank generation time from \RFCanvasGenerate{}\,s to \RFPackGenerate{}\,s (\RFPackSaving{}, Table~\ref{tab:fidelity-chain}) at the cost of roughly 2\,GiB of additional peak GPU memory, while a single group of eight siblings drops from \RFUnpackedGroupEight{}\,s to \RFPackedGroupEight{}\,s.
+The text-to-image path already packed sibling requests and is unaffected.
 
-One consequence reaches back into Section~\ref{sec:reward-overlap}.
-The initial noise is addressed per row, so a packed request may cover any contiguous part of a group rather than a whole one.
-The engine therefore no longer declares that it packs groups, and a reward micro-batch is free to cut one: a four-row micro-batch of an eight-sibling group is a single four-output request.
-The floor that Section~\ref{sec:reward-overlap} describes for this engine is removed by this change.
+Because initial noise tensors are indexed per row, a packed request can span any contiguous subset of a sibling group rather than requiring the full group at once.
+Consequently, the adapter no longer requires \texttt{RewardStack} (Section~\ref{sec:reward-overlap}) to round micro-batch sizes up to full group boundaries: a four-row micro-batch from an eight-sibling group executes as a single four-sample packed request.
 
-\subsection{What the four changes do together}
+\subsection{Combined Effect of the Four Changes}
 \label{sec:fidelity-combined}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{artifacts/reported_results/2026-10-04-rollout-fidelity/figures/rollout_chain.pdf}
-\caption{The image-editing rollout before and after the changes, on one eight-GPU node with a remote EditScore judge. Left: seconds to generate one rank's sixteen edits. Right: the mean judge score of the first rollout, which no optimizer step has yet influenced; the points after the fix are separate runs of the same first batch.}
+\caption{Cumulative effect of the four rollout-fidelity changes on BAGEL image editing (\texttt{it2i}) on one eight-GPU H20 node with a remote EditScore 8B judge. Left: per-rank generation time for 16 edits. Right: mean judge score on the first rollout prior to any optimizer step; points after the fix represent independent runs on the same initial prompt batch.}
 \label{fig:fidelity-chain}
 \end{figure}
 
 \begin{table}[H]
-\caption{Image editing with LoRA on one eight-GPU H20 node, BAGEL through vLLM-Omni, sixteen prompts with eight samples each at $512\times512$, EditScore 8B on a second node. Generation is the slowest rank's seconds for its sixteen rows. The reward column is the mean judge score of the first rollout on the same prompts, before any optimizer step.}
+\caption{Cumulative ablation of the four rollout-fidelity changes on BAGEL image-to-image editing (\texttt{it2i}) with LoRA on one eight-GPU H20 node (vLLM-Omni rollout, 16 prompts $\times$ 8 samples at $512\times512$, remote EditScore 8B judge). ``Generation'' reports the slowest rank's generation time for its 16 rows; ``First-rollout reward'' reports the mean judge score before the first optimizer update.}
 \label{tab:fidelity-chain}
 \centering
 \small
 \input{artifacts/reported_results/2026-10-04-rollout-fidelity/it2i_table.tex}
 \end{table}
 
-Table~\ref{tab:fidelity-chain} puts the four changes on one workload: generation per rank falls \RFTotalSaving{}, from \RFMainGenerate{}\,s to \RFPackGenerate{}\,s, and the first rollout's judge score settles between \RFPostFixRewardMin{} and \RFPostFixRewardMax{} instead of \RFMainReward{}.
-The first-update ratio stays within $10^{-4}$ of 1 throughout.
-The layout check is always on from \#548 and raises at the first mismatched replay; every arm from the per-group canvas on completed its replays, including the one where a micro-batch cuts a group.
-These are one to four rollouts per arm on a single workload shape: they establish the direction and size of each change on this path, not a distribution.
+Table~\ref{tab:fidelity-chain} and Figure~\ref{fig:fidelity-chain} summarize the cumulative impact of UniRL pull requests~\#547--\#550 on the $512\times512$ image-editing workload: per-rank generation time drops by \RFTotalSaving{} (from \RFMainGenerate{}\,s to \RFPackGenerate{}\,s), while the first-rollout EditScore mean increases from \RFMainReward{} to \RFPostFixRewardMin{}--\RFPostFixRewardMax{}.
+Across all arms, the first-update importance ratio remains within $10^{-4}$ of 1, and the structural token-layout check (enabled from \#548 onward) passes on every replay, including configurations where \texttt{RewardStack} splits an eight-sibling group across micro-batches.
+As in Section~\ref{sec:reward-results}, these measurements comprise one to four rollouts per arm on a single workload shape and establish the mechanism-level effect rather than multi-seed training variance.
 
-\subsection{The long tail that mixed resolution exposes}
+\subsection{Mitigating Mixed-Resolution Stragglers via Cost-Aware Assignment}
 \label{sec:fidelity-tail}
 
-Once a rollout can mix canvases, the assignment of rows to ranks stops being neutral.
-Today it is the data-parallel split: prompts in order, equal row counts, no attention to cost.
-On a dataset whose canvases are drawn per row from a production-like mix with a four-fold span in tokens, the steady text-to-image rollout spent \RFTtoiIdle{} of its rollout window with at least one rank idle, waiting on a rank that had drawn the expensive prompts.
+When a rollout batch mixes output canvas resolutions, static data-parallel sharding---assigning prompts in dataset order with equal row counts per rank---creates severe load imbalance across ranks.
+On a mixed-resolution dataset whose canvases span a $4\times$ range in image tokens, the default static split left at least one GPU rank idle for \RFTtoiIdle{} of the text-to-image rollout window while waiting for the rank assigned the largest canvases.
 
-We measured what a cost-aware assignment recovers.
-A coordinator hands each rank units of work from a queue ordered by an estimated cost, and an idle rank may take the cheapest unit from the busiest rank's queue; rows are restored to their original order by identifier before credit assignment, so the trajectory the trainer sees is unchanged.
-Table~\ref{tab:fidelity-tail} reports the steady rollout of each arm.
+To quantify how much of this straggler tail can be recovered without changing trajectory semantics, we evaluated a cost-aware work-assignment prototype.
+A driver-side coordinator orders prompt groups by estimated token cost and dispatches work units to ranks from a shared queue; when a rank finishes its assigned queue, work stealing allows it to claim the lowest-cost remaining unit from the busiest rank's queue.
+Before credit assignment, completed rows are restored to their canonical parent-contiguous order by sample identifier $I_i$, leaving the trajectory structure consumed by the trainer unchanged.
+Table~\ref{tab:fidelity-tail} reports steady-state rollout measurements across static, balanced, and work-stealing assignments.
 
 \begin{table}[H]
-\caption{Assignment of mixed-canvas work to ranks, second rollout of each arm, on one eight-GPU node. ``Idle'' is the fraction of the rollout window in which at least one rank has finished and waits. The cost estimate is image tokens. This mechanism is on a branch with no pull request.}
+\caption{Comparison of rank assignment strategies on mixed-canvas batches (second rollout of each arm on one eight-GPU H20 node) for text-to-image (\texttt{t2i}) and image-to-image editing (\texttt{it2i}). ``Idle'' denotes the fraction of the rollout window during which at least one rank has completed generation and waits at the barrier. The cost model estimates work by output image tokens. Evaluated on an experimental branch without an open pull request.}
 \label{tab:fidelity-tail}
 \centering
 \small
 \input{artifacts/reported_results/2026-10-04-rollout-fidelity/longtail_table.tex}
 \end{table}
 
-Three readings, each from two rollouts of each arm.
-Balancing recovers most of the tail where the cost estimate is good: text-to-image falls from \RFTtoiBase{}\,s to \RFTtoiBalanced{}\,s and idle time from \RFTtoiIdle{} to 2\%, while the mean per-rank generation time is unchanged at about 104\,s, so the work was redistributed rather than reduced.
-Stealing is insurance against a wrong estimate rather than a gain in its own right: with a good cost model it never triggered in text-to-image and moved at most \RFStealPixelsEditMax{} units per rollout in image editing, and with a deliberately naive one that counts rows and ignores the canvas, which gave back \RFNaiveGap{}\,s of the balancing gain, it recovered \RFStealRecovered{} of them (\RFNaiveBalanced{}\,s to \RFNaiveSteal{}\,s).
-And the two mechanisms compose with the reward schedule of Section~\ref{sec:reward}: against a judge with headroom, overlapping reward alone took the editing rollout from \RFSmallBase{}\,s to \RFSmallOverlap{}\,s, the cost-aware assignment alone to \RFSmallSteal{}\,s, and both together to \RFSmallBoth{}\,s, or \RFSmallBothSaving{}.
+Three observations follow from two rollouts per arm:
+\begin{enumerate}
+  \item \textbf{Static cost balancing removes most straggler idle time when the cost model is accurate.} In text-to-image (\texttt{t2i}) generation, cost-balanced assignment reduces rollout-plus-reward time from \RFTtoiBase{}\,s to \RFTtoiBalanced{}\,s and cuts the barrier idle fraction from \RFTtoiIdle{} to 2\%, while the mean per-rank generation time remains constant at approximately 104\,s, confirming that work is balanced across ranks rather than reduced.
+  \item \textbf{Work stealing provides robustness against cost-model misspecification.} Under the image-token cost model, dynamic stealing was never triggered in \texttt{t2i} and transferred at most \RFStealPixelsEditMax{} units per rollout in \texttt{it2i}. However, under a deliberately misspecified cost model that counts only rows and ignores canvas resolution---which forfeits \RFNaiveGap{}\,s of the balancing reduction---work stealing recovers \RFStealRecovered{}\,s of that loss (reducing rollout time from \RFNaiveBalanced{}\,s to \RFNaiveSteal{}\,s).
+  \item \textbf{Cost-aware assignment composes with generation--reward overlap only when the reward judge has spare capacity.} Against the 8B EditScore judge (which has headroom), reward overlap alone reduces \texttt{it2i} rollout-plus-reward time from \RFSmallBase{}\,s to \RFSmallOverlap{}\,s, cost-balanced assignment with stealing reduces it to \RFSmallSteal{}\,s, and combining both reduces it to \RFSmallBoth{}\,s (\RFSmallBothSaving{} total reduction).
+\end{enumerate}
 
-Against the saturated 72B judge, cost-aware assignment made rollout plus reward \emph{longer}, with or without overlapping reward: from \RFLargeBase{}\,s to \RFLargeSteal{}\,s with overlap and \RFLargeStealNoOverlap{}\,s without in the steady rollout, and from \RFLargeFirstBase{}\,s to \RFLargeFirstSteal{}\,s and \RFLargeFirstStealNoOverlap{}\,s in the first.
-It still flattened generation---the slowest rank fell from \RFLargeTail{}\,s to \RFLargeTailSteal{}\,s---but that is exactly the harm: with ranks finishing together they reach the judge together, and the queueing that the uneven baseline had spread out now happens all at once.
-This is the same mechanism that Section~\ref{sec:reward-results} found behind micro-batching's gain, read in reverse.
-Two consequences follow.
-Such a scheduler has to be gated on measured reward headroom rather than enabled by default.
-But the regime that makes it harmful is the one Section~\ref{sec:reward-results} shows this deployment manufactures: one judge replica, and a server that scores one request at a time, which turns the scheduler's small concurrent requests into a queue instead of a batch.
-With enough judge capacity the gate would rarely close; Section~\ref{sec:reward-results} finds that at its shape one replica of this judge is saturated even with whole-shard requests, so the capacity has to come from more replicas, with batching across concurrent requests or a disaggregated prefill stage reducing how many.
-The arm belongs in this report as the boundary of the mechanism, not as a configuration to expect.
-A second cost, measured and not yet addressed: in every arm that reassigned rows, the training phase ran \RFTrainSlowSteadyMin--\RFTrainSlowSteadyMax\% slower in the steady rollout and \RFTrainSlowFirstMin--\RFTrainSlowFirstMax\% slower in the first.
-Part of this is the queue path itself: in the text-to-image runs, prompt-order shards routed through the same queue, which reassigns nothing, trained \RFTrainSlowOwnerMin--\RFTrainSlowOwnerMax\% slower.
-The rest is consistent with a rank replaying rows that another rank generated, whose latents cross workers once the rows are restored to their original order; we have not separated the two.
-In the steady rollout the whole step is still shorter wherever the assignment shortens rollout plus reward.
-In the first rollout the slower training phase can outweigh that gain: with the 8B judge, cost-aware assignment without overlap made the first step \RFSmallFirstStepSteal{}\,s longer.
-An assignment that also followed the rows into training would avoid the replay cost.
-None of this is proposed yet.
+By contrast, when paired with the saturated single-replica 72B EditScore judge, cost-aware assignment \emph{increases} combined rollout-plus-reward time from \RFLargeBase{}\,s to \RFLargeSteal{}\,s with overlap (\RFLargeStealNoOverlap{}\,s without overlap) in the steady rollout, and from \RFLargeFirstBase{}\,s to \RFLargeFirstSteal{}\,s (\RFLargeFirstStealNoOverlap{}\,s without overlap) in the first rollout.
+Although balancing still reduces the slowest rank's generation time from \RFLargeTail{}\,s to \RFLargeTailSteal{}\,s, synchronizing rank completion causes all ranks to submit their final reward requests simultaneously, concentrating the judge queueing delay that the imbalanced baseline had naturally staggered.
+This is the inverse of the request-staggering effect analyzed in Section~\ref{sec:reward-results}, and implies that dynamic load balancing should be gated on available reward-service headroom (or paired with sufficient judge replicas and cross-request batching).
+
+A second effect remains unaddressed in this prototype: in every arm that reordered rows across ranks, the subsequent training phase ran \RFTrainSlowSteadyMin--\RFTrainSlowSteadyMax\% slower in the steady rollout and \RFTrainSlowFirstMin--\RFTrainSlowFirstMax\% slower in the first rollout.
+Control runs that routed prompt-order shards through the same queue without cross-rank reassignment exhibited a \RFTrainSlowOwnerMin--\RFTrainSlowOwnerMax\% training slowdown, indicating that part of the overhead stems from the queue path itself and the remainder from cross-worker latent transfers when rows are restored to canonical order before training.
+While total step time in the steady rollout remained shorter whenever balancing reduced rollout-plus-reward time, in the first rollout the training slowdown outweighed the rollout gain under the 8B judge without overlap (increasing total step time by \RFSmallFirstStepSteal{}\,s).
+Preserving the balanced rank assignment into the training phase would avoid cross-worker reordering and remains future work.

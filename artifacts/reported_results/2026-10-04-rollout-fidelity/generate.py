@@ -19,7 +19,7 @@ STAGE_LABEL = {
     "sibling packing": "+ sibling packing (\\#550)",
 }
 STRATEGY_LABEL = {
-    "baseline": "Prompt-order shards (today)",
+    "baseline": "Prompt-order shards (default)",
     "baseline+overlap": "Prompt-order shards, reward overlapped",
     "owner": "Prompt-order shards through the unit queue",
     "balanced": "Cost-balanced shards",
@@ -65,12 +65,16 @@ def write_it2i_table(arms: list[dict[str, str]]) -> None:
     (HERE / "it2i_table.tex").write_text("".join(lines))
 
 
+def fmt_int(val: str) -> str:
+    return f"{int(val):,}" if val.isdigit() else val
+
+
 def write_layout_table(probes: list[dict[str, str]]) -> None:
     """Probe table of the token-layout check: engine and trainer context lengths, and what each probe produced."""
     lines = [
         NOTE,
         "\\begin{tabularx}{\\textwidth}{@{}Xlrrll@{}}\n\\toprule\n",
-        "Probe & Path & Engine & Trainer & Layout check & $|r-1|$ \\\\\n\\midrule\n",
+        "Probe & Path & Engine & Trainer & Layout check & $|\\rho-1|$ \\\\\n\\midrule\n",
     ]
     for row in probes:
         deviation = row["first_update_ratio_dev"]
@@ -83,7 +87,7 @@ def write_layout_table(probes: list[dict[str, str]]) -> None:
             shown = f"${mantissa}\\times10^{{{int(exponent)}}}$"
         name = row["probe"][0].upper() + row["probe"][1:]
         lines.append(
-            f"{name} & {row['workload']} & {row['engine_kv_len']} & {row['trainer_kv_len']} & "
+            f"{name} & {row['workload']} & {fmt_int(row['engine_kv_len'])} & {fmt_int(row['trainer_kv_len'])} & "
             f"{row['layout_check']} & {shown} \\\\\n"
         )
     lines.append("\\bottomrule\n\\end{tabularx}\n")
@@ -103,8 +107,8 @@ def write_canvas_table(costs: list[dict[str, str]]) -> None:
         for workload, packing in (("it2i", "one request per sample"), ("it2i", "packed"), ("t2i", "packed")):
             match = [r for r in rows if r["canvas"] == canvas and r["workload"] == workload and r["packing"] == packing]
             cells.append(f"{float(match[0]['seconds_per_group']):.2f}" if match else "--")
-        tokens = next(r["image_tokens"] for r in rows if r["canvas"] == canvas)
-        label = "$" + canvas.replace("x", "\\times") + "$"
+        tokens = fmt_int(next(r["image_tokens"] for r in rows if r["canvas"] == canvas))
+        label = "$" + canvas.replace("x", "\\times").replace("1024", "1{,}024") + "$"
         lines.append(label + f" & {tokens} & " + " & ".join(cells) + " \\\\\n")
     lines.append("\\bottomrule\n\\end{tabular}\n")
     (HERE / "canvas_table.tex").write_text("".join(lines))
@@ -182,8 +186,8 @@ def write_macros(arms: list[dict[str, str]], costs: list[dict[str, str]], longta
         "RFPostFixRewardMin": f"{min(post_fix):.2f}",
         "RFPostFixRewardMax": f"{max(post_fix):.2f}",
         "RFLongTailRollout": "2",
-        "RFWorkerKv": "5938",
-        "RFTrainerKv": "2263",
+        "RFWorkerKv": "5,938",
+        "RFTrainerKv": "2,263",
         "RFRatioBuggy": "5.0",
         "RFRatioHealthy": "3.4",
         "RFRatioHealthyEdit": "5.4",

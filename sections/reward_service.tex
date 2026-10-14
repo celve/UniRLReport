@@ -1,208 +1,201 @@
 % Numbers come from artifacts/reported_results/2026-09-30-reward-service/ (see its README).
 \input{artifacts/reported_results/2026-09-30-reward-service/macros.tex}
 
-\section{Reward Serving and Generation--Reward Overlap}
+\section{Case Study I: Reward Serving and Generation--Reward Overlap}
 \label{sec:reward}
 
-Reward is the one role of the feedback program whose cost the policy does not determine.
-A contrastive preference model scores a batch in well under a second; a vision--language judge with tens of billions of parameters can take as long as the generation it evaluates, needs a different software stack from the trainer, and may not fit beside the policy on one accelerator.
-\system therefore fixes what a reward \emph{is} at the trajectory boundary and leaves where it runs, in which environment, and when it is called relative to generation as separate execution choices.
+Reward evaluation is the one role in the feedback loop whose computational cost is independent of the policy architecture.
+A lightweight contrastive preference model scores a batch in well under a second, whereas a vision--language judge with tens of billions of parameters can take as long as the generation it evaluates, requires a separate software environment from the trainer, and may not fit alongside the policy on the same accelerator.
+UniRL therefore fixes the reward interface at the trajectory boundary while treating placement, environment isolation, and scheduling relative to generation as orthogonal execution choices.
 
 \paragraph{Source scope.}
-This section describes UniRL commit \texttt{651490e} (2026-09-30), which is later than the design-audit commit used elsewhere in the paper.
-The shared-GPU mechanism of Section~\ref{sec:reward-mps} is an open pull request (\#492 at \texttt{8bb4119}) and is not part of that commit.
-The measurements in Section~\ref{sec:reward-results} lie outside the E0--E6 programme; their per-rollout records and generator are under \codepath{artifacts/reported\_results/2026-09-30-reward-service/}.
+This case study examines UniRL commit \texttt{651490e} (2026-09-30), which postdates the v0.2.0 design-audit commit analyzed in Sections~\ref{sec:trajectory}--\ref{sec:instantiations}, together with the shared-GPU mechanism proposed in UniRL pull request~\#492 (commit \texttt{8bb4119}).
+The measurements in Section~\ref{sec:reward-results} were collected as a standalone systems case study outside the E0--E6 evaluation program; their per-rollout records and table generators are archived in \codepath{artifacts/reported\_results/2026-09-30-reward-service/}.
 
-\subsection{One scoring contract over many scorers}
+\subsection{Scoring Contract and Failure Semantics}
 \label{sec:reward-contract}
 
-A trainer calls one method, \texttt{score\_and\_attach}, on the reward role.
-The call is scattered over tree-complete shards like any other distributed method (Section~\ref{sec:execution}); on each shard it assembles a typed request from the trajectory, asks exactly one backend for scores, and returns a new trajectory whose frontier carries a scalar reward and named component rewards per row.
-The request holds the frontier's decoded values, the non-text values of earlier turns as conditioning (for example the source image of an edit), the original and the generation prompt, and the sample and group identifiers.
-A backend states which prompt it scores against; after a rewrite stage the two differ, and the choice decides whether the reward measures fidelity to the user's request or to the rewritten text.
+A trainer invokes a single method, \texttt{score\_and\_attach}, on the reward role.
+The call is scattered across tree-complete shards like any other distributed role method (Section~\ref{sec:execution}); on each shard it constructs a typed request from the trajectory, queries a configured backend for scores, and returns an updated trajectory whose frontier layer carries a scalar reward and named component rewards per row.
+The request contains the frontier layer's decoded values, non-text values from earlier turns as conditioning (for example, the source image in an image-editing task), both the original root prompt and the rewritten generation prompt, and the sample and group identifiers.
+Each backend specifies which prompt field it scores against; when a prompt-rewrite stage precedes generation, the two prompts differ, and this configuration determines whether the reward measures fidelity to the original user request or to the rewritten prompt.
 
-The role refuses to be a silent source of bad credit.
-It rejects a frontier that already carries rewards, raises when any row fails instead of substituting zero---remote backends count a non-finite score as a failure---and sets the reward of a free-length autoregressive trace that ran into its token limit to zero, or applies a length penalty, as configured.
-It also rejects a training reward that gives prompt-to-video alignment no weight, since an audio--video agreement score alone can be raised by collapsing both streams; such a score remains available for evaluation.
-A group-normalized advantage spreads one corrupted reward over every sibling in its group, which is why these cases stop the step.
+To prevent silent propagation of invalid credit, the reward role enforces strict validation on scored outputs.
+It rejects a frontier layer that already carries rewards, raises an exception when any row fails rather than substituting a default zero (remote backends treat any non-finite score as a failure), and assigns zero reward or a configured length penalty to free-length autoregressive traces that hit the token limit without terminating.
+For audio--video generation, it also rejects training reward configurations that assign zero weight to prompt-to-video alignment, because optimizing an audio--video agreement score alone permits degenerate solutions that collapse both streams; such scores remain permitted in evaluation-only mode.
+Because group-normalized advantage estimation couples every sibling under a prompt, a single corrupted reward would contaminate the entire group; failing closed prevents corrupted updates from entering the optimizer.
 
-Table~\ref{tab:reward-scorers} lists what currently implements the contract: \RSLocalBackends{} in-process backends and \RSServiceScorers{} scorers registered in the standalone reward service.
-They cover contrastive and preference models such as CLIP, PickScore, HPS and ImageReward~\citep{radford2021clip,kirstain2023pickapic,wu2023hpsv2,ma2025hpsv3,xu2023imagereward}, vision--language judges for composition, rendered text and instruction-guided editing~\citep{kamath2025geneval2,wu2025editreward,luo2025editscore}, video and audio--video alignment models, and text graders for reasoning workloads.
-A remote backend can request a panel of scorers for each row and reduce it by a weighted sum, mean, minimum or maximum; the individual scores stay attached as components for logging.
-Presence in the table means that the code path exists; it is not evidence that every scorer has been exercised in training.
+Table~\ref{tab:reward-scorers} summarizes the scorers that implement this contract: \RSLocalBackends{} in-process backends and \RSServiceScorers{} scorers available in the standalone reward service's registry.
+These span contrastive and preference models such as CLIP, PickScore, HPS, and ImageReward~\citep{radford2021clip,kirstain2023pickapic,wu2023hpsv2,ma2025hpsv3,xu2023imagereward}, vision--language judges for composition, rendered text, and instruction-guided editing~\citep{kamath2025geneval2,wu2025editreward,luo2025editscore}, video and audio--video alignment models, and text verifiers for reasoning tasks.
+A remote backend can query a panel of scorers for each row and aggregate the results via a weighted sum, mean, minimum, or maximum while preserving individual component scores for logging.
+Inclusion in Table~\ref{tab:reward-scorers} indicates that the adapter code path exists in the repository; it does not imply that every listed scorer has been benchmarked in end-to-end training.
 
 \begin{table}[H]
-\caption{Reward implementations at commit \texttt{651490e}, by the output they score. Names are registry keys. $^{\ast}$Registered but disabled in the example service configuration.}
+\caption{Reward implementations at UniRL commit \texttt{651490e}, grouped by scored output modality. Names denote registry keys. $^{\ast}$Present in the registry but disabled in the default service configuration.}
 \label{tab:reward-scorers}
 \centering
 \small
 \input{artifacts/reported_results/2026-09-30-reward-service/scorers_table.tex}
 \end{table}
 
-\subsection{Where a scorer runs}
+\subsection{Scorer Placement and Isolation Modes}
 \label{sec:reward-placement}
 
-The same contract is served from four places, which differ in what they isolate.
+The same scoring contract can be served from four execution modes that trade off communication overhead against memory and dependency isolation.
 
-\paragraph{In the policy's workers.}
-An in-process backend loads the scorer in the worker that also hosts training and rollout roles.
-Its memory is governed by the residency policy of Section~\ref{sec:lifecycle}: one choice per role states whether the trainer, the rollout engine and the reward keep their weights on the accelerator while idle, and a planner issues only the transitions that change that state.
-A reward phase that follows generation therefore inherits an already parked trainer instead of moving it again.
+\paragraph{In-process on policy workers.}
+An in-process backend loads the scorer directly inside the worker that hosts the training and rollout roles.
+Its device memory is governed by the per-role residency policy described in Section~\ref{sec:lifecycle}: each role (trainer, rollout engine, and reward) is configured as either resident or offloaded when idle, and the residency planner issues only the state transitions needed between phases.
+When reward evaluation immediately follows generation, the reward role executes while the trainer remains offloaded, avoiding redundant host--device transfers.
 
-\paragraph{On a reward slab.}
-A placement fraction carves the tail of the device pool into a disjoint slab for the reward role.
-Scoring is scattered over that slab's workers and the decoded values reach it as tensor references, so a heavier scorer stops competing with the policy for memory while the job remains one program.
+\paragraph{On a separate reward slab.}
+A placement scope can allocate a fraction of the device pool as a separate GPU slab dedicated to the reward role.
+Scoring calls are scattered across the workers of that slab and receive decoded media via tensor references, isolating heavier scorers from policy memory pressure while keeping the workflow within a single distributed program.
 
 \paragraph{In a managed child process.}
-Scorers built on a serving engine or on pinned library versions often cannot be imported into the trainer's environment.
-A managed backend starts one scorer process per reward worker with its own Python interpreter, hands it a listening loopback socket and that worker's single visible device, and speaks HTTP to it.
-The protocol is deliberately strict.
-Requests are sent in bounded chunks independent of the shard size.
-Every item carries its sample, group, source rank, policy version and scorer version, and the child must echo them.
-An idempotency key derived from those fields and a fingerprint of the payload lets a retried request return the cached result instead of scoring twice.
-The child serializes scoring with its lifecycle operations and refuses non-finite outputs.
-The parent can keep the scorer resident or bring it onto the device only for the duration of each call.
-A child may host an entire vLLM engine~\citep{kwon2023vllm}: for the EditScore judge, the merged integration (UniRL \#348) reports that parking takes 5.1\,s and leaves 1.0\,GB of 47\,GB on the device, that waking takes 0.3\,s, and that scores are bit-identical across the cycle.
-Managed children currently accept image and image-editing requests only.
+Scorers that depend on dedicated serving engines or conflicting library versions often cannot be imported into the trainer's Python environment.
+A managed child backend spawns one subprocess per reward worker using a separate Python interpreter, binds it to a local loopback HTTP socket and that worker's assigned GPU, and communicates over a strict request--response protocol.
+Requests are transmitted in bounded chunks independent of the data-parallel shard size.
+Every item carries its sample ID, group ID, source rank, behavior version, and scorer version, all of which the child process must echo in its response.
+An idempotency key derived from these identifiers and a payload fingerprint allows retried requests to return cached scores without re-evaluating the model.
+The child process serializes scoring requests with its memory-lifecycle transitions and rejects non-finite outputs.
+The parent worker can either keep the child's model resident on the GPU or wake it only for the duration of each scoring call.
+A managed child process can host a full vLLM engine~\citep{kwon2023vllm}: for the EditScore judge integrated in UniRL pull request~\#348, offloading to host memory takes 5.1\,s (leaving 1.0\,GB of 47\,GB allocated on the device), waking takes 0.3\,s, and returned scores are bit-identical across offload--wake cycles.
+In the audited implementation, managed child processes support image and image-editing requests.
 
 \paragraph{In a standalone service.}
-A separate reward service places a gateway in front of Ray worker groups~\citep{moritz2018ray}.
-Each configured reward is a group of replica actors that reserve their own devices and install their own package set on first start.
-The gateway decodes a batch once, buckets its items by requested reward, issues one actor call per reward with round-robin replica choice, and awaits each reward under its own timeout.
-A reward that fails is reported per item and per reward next to the scores that succeeded, so one scorer cannot turn a whole batch into an error; the client treats any missing score as a failure of that row.
-The per-scorer environments of the gateway share the cluster's interpreter and PyTorch build, which is the limit that the managed child removes.
-The single-scorer server used for managed children can also be started by hand on another node, which is how the judges of Section~\ref{sec:reward-results} were served.
+A standalone reward service places an HTTP gateway in front of Ray actor groups~\citep{moritz2018ray}.
+Each configured scorer runs as a pool of replica actors that reserve dedicated GPUs and initialize their own package dependencies on startup.
+The gateway decodes each incoming batch once, groups items by requested scorer, dispatches requests across replicas in round-robin order, and awaits each scorer under an independent timeout.
+Scorer failures are reported per item and per scorer alongside successful results so that a single failed backend does not abort the entire batch; the trainer client treats any missing score as a row failure.
+Because actor groups within the Ray cluster share the base Python interpreter and PyTorch runtime, conflicts at the interpreter level require either the managed child backend or an external single-scorer HTTP server launched on a separate node, which is the deployment used for the remote judges in Section~\ref{sec:reward-results}.
 
-\subsection{Overlapping reward with generation}
+\subsection{Overlapping Reward Evaluation with Generation}
 \label{sec:reward-overlap}
 
-In the synchronous diffusion loop the driver first has every data-parallel rank generate its whole shard and only then dispatches scoring.
-With a remote judge this wastes time twice: the training node idles while the judge works, and all ranks' requests reach the judge at the same instant and queue behind one another.
+In the default synchronous diffusion loop, all data-parallel ranks finish generating their full shards before the driver dispatches reward scoring.
+When scoring uses a remote judge, this barrier introduces two sources of latency: the training GPUs remain idle while the remote judge processes the batch, and requests from all data-parallel ranks arrive at the judge simultaneously, creating a burst queue.
 
-An optional worker-side role, \texttt{RewardStack}, changes the unit of work instead of the contract.
-It is built on the same worker as the rollout engine and the reward role, slices the frontier of its shard into micro-batches of a configured number of rows, and for each micro-batch calls the engine and then the reward in process.
-The scored parts are concatenated in the original row order, so group membership and credit assignment are unchanged, and the driver skips its own reward phase.
-A micro-batch may be a single row; if the engine packs a whole sibling group into one request, the micro-batch is extended to the end of the group it would otherwise split. (Section~\ref{sec:fidelity-pack} removes that floor for the engine measured below.)
-With \texttt{overlap} enabled, scoring calls are queued in order on one background thread and generation never waits for a score; a scorer failure surfaces after the next micro-batch is generated.
+An optional worker-side role, \texttt{RewardStack}, pipelines generation and scoring at the micro-batch level without altering the outer trajectory contract.
+Colocated on the same worker as the rollout engine and reward client, \texttt{RewardStack} partitions its shard's frontier layer into micro-batches of a configured row count and invokes generation followed by scoring on each micro-batch.
+Scored micro-batches are concatenated in their original row order so that sibling contiguity and group credit assignment remain unchanged, and the driver bypasses its separate post-generation reward phase.
+A micro-batch may be as small as a single row; if the underlying rollout engine requires an entire sibling group per request, the micro-batch boundary is rounded up to avoid splitting a group (Section~\ref{sec:fidelity-pack} removes this constraint for the vLLM-Omni BAGEL adapter).
+When \texttt{overlap} is enabled, scoring requests are submitted in order to a single background thread per worker so that generation of the next micro-batch proceeds immediately; any scoring exception is surfaced after the subsequent micro-batch completes generation.
 
-The role fails closed on layouts it cannot serve.
-It needs the engine and the reward as siblings on one worker, so a separate rollout slab and a reward slab are rejected at startup, as are a reward that is not resident during generation and sequence- or tensor-parallel groups, in which several ranks would score one shard.
-Overlap carries one semantic condition: a scorer that draws from the process-wide random generator would interleave with the sampler's noise draws and make the rollout itself irreproducible, so such scorers must run in the serial schedule.
-The asynchronous trainers overlap by other means: the autoregressive one admits the next generation before it scores the collected batch, and releasing a diffusion rollout lane while a remote reward is pending is proposed in an open pull request.
+The \texttt{RewardStack} role enforces fail-closed validation on unsupported topologies.
+Because it requires the rollout engine and reward client to reside on the same worker, startup validation rejects configurations that use a separate rollout slab, a separate reward slab, a non-resident reward role during generation, or sequence- or tensor-parallel rollout groups in which multiple ranks collaborate on a single shard.
+Overlapped execution also imposes one reproducibility constraint: if an in-process scorer consumes numbers from the global PyTorch random number generator, background scoring threads would interleave with the diffusion sampler's noise draws and make rollouts non-deterministic; such scorers must therefore use the serial micro-batch schedule.
+Asynchronous trainers achieve overlap through a different mechanism: the asynchronous AR trainer admits the next generation batch before scoring the completed batch, while an open UniRL pull request extends the asynchronous diffusion manager to release rollout capacity while remote reward requests are in flight.
 
-\subsection{Measured effect of the schedule}
+\subsection{Empirical Evaluation of Micro-Batched and Overlapped Schedules}
 \label{sec:reward-results}
 
-\paragraph{Setup.}
-One node with eight H20 GPUs trains BAGEL~\citep{deng2025bagel} for image editing with LoRA, generating through eight data-parallel vLLM-Omni engines.
-A rollout has 32 prompts with eight edits each, or 32 rows per rank, which a micro-batch size of eight splits into four micro-batches.
-An EditScore judge~\citep{luo2025editscore} on a second node scores every source--edit pair over HTTP, in an 8B and a 72B variant, both as one tensor-parallel vLLM engine behind the single-scorer server.
-Runs last two or three rollouts; the first is discarded as warm-up and the rest are pooled over repeated sessions on two allocations of the same hardware.
-Times are the driver's phase timers.
-The image-editing wall-clock figures are estimates for the injected source conditioning of Section~\ref{sec:fidelity-layout}.
-Generation is scaled by the ratio between the two conditioning paths that Table~\ref{tab:fidelity-chain} measures at sixteen rows per rank, assuming the ratio holds at 32 rows per rank and for every micro-batch.
-The reward-side times---the judge's service and queueing and the reward time that remains outside generation---are kept as measured, since the judge scores the same number of $512\times512$ pairs in the same request sizes.
-Where the judge has headroom the whole generation saving reaches the wall-clock; where it is saturated, only the earlier arrival of the first micro-batch does.
-The bundle states the model and keeps the estimate next to its inputs.
-The number of rollouts is small and the workload is single, so the table supports the direction and rough size of the effect for this shape, not a distribution.
-Thirteen of the runs also logged, inside each worker, when every micro-batch was generated and when every reward call was sent and answered, and the judge's server logged the arrival and completion of every request.
-The judge's service times, total work, waits and per-pair costs below come from these traces; arrival times and windows that depend on generation follow from the estimate and are labelled as estimated.
-\paperTODO{The image-editing rows of Table~\ref{tab:reward-overlap} and Figure~\ref{fig:reward-overlap} are estimates. Re-measure them with the injected conditioning (UniRL \#547) at this shape: (i) both judges under the whole-shard, serial and overlapped schedules, at least three steady-state rollouts per arm; (ii) per-rank and judge-side traces of one run per arm, to refresh the judge-side numbers and restore the recorded timeline figure; (iii) the 16-row shape for both judges with whole-shard, eight-row requests without the stack, and two micro-batches per rank; (iv) optionally, the 8B-judge train phase with and without the collection pass. Tracked in UniRLReport issue \#19.}
+\paragraph{Experimental setup.}
+We evaluate the scheduling modes on a single node of eight NVIDIA H20 GPUs fine-tuning BAGEL~\citep{deng2025bagel} for instruction-guided image editing with Low-Rank Adaptation (LoRA), using eight data-parallel vLLM-Omni rollout engines.
+Each rollout processes 32 prompts with eight image edits per prompt (32 rows per rank), which a micro-batch size of eight partitions into four micro-batches per rank.
+An EditScore vision--language judge~\citep{luo2025editscore} hosted on a second node scores each source--edit pair over HTTP in either an 8B or a 72B model variant, each served by a single tensor-parallel vLLM instance behind the standalone single-scorer server.
+Each run executes two to three rollouts; the first rollout is excluded as warm-up and steady-state rollouts are pooled across repeated sessions on two allocations of identical hardware.
+Phase durations are recorded by the driver's monotonic phase timers.
+
+Because these runs were collected prior to the conditioning-injection fix analyzed in Section~\ref{sec:fidelity-layout}, the image-editing wall-clock durations in Table~\ref{tab:reward-overlap} and Figure~\ref{fig:reward-overlap} are rescaled estimates reflecting the restored conditioning path.
+Specifically, generation durations are scaled by the ratio between the fixed and unfixed conditioning paths measured at 16 rows per rank in Table~\ref{tab:fidelity-chain}, under the assumption that the same factor applies at 32 rows per rank across all micro-batches.
+Reward-side durations---judge service time, queueing delay, and non-overlapped reward wait time---are retained directly from the measurements, as the judge evaluates the same number of $512\times512$ image pairs at identical request batch sizes.
+When the judge has idle capacity during generation, the full generation time reduction carries over to end-to-end rollout time; when the judge is saturated, only the earlier arrival of the first micro-batch reduces total wall-clock time.
+Both the raw measurements and the rescaling model are archived in the artifact bundle.
+Because the rollout counts are small and cover a single model and workload shape, these results characterize the mechanism's behavior and approximate magnitude rather than a multi-seed performance distribution.
+In 13 of the runs, worker-side tracing additionally logged the start and completion timestamps of every generated micro-batch and HTTP reward call, while the judge server logged request arrival and completion times.
+Judge service times, total judge busy time, queueing delays, and per-pair scoring costs reported below are taken directly from these traces; arrival timestamps and overlap windows that depend on generation speed follow the rescaled estimate and are explicitly labeled as estimated.
+% TODO[data]: Re-measure the image-editing rows of Table~\ref{tab:reward-overlap} and Figure~\ref{fig:reward-overlap} directly with injected conditioning (UniRL #547). Tracked in UniRLReport issue #19.
 
 \begin{table}[H]
-\caption{Generation plus reward wall-clock per rollout under three schedules: mean and range over steady-state rollouts. Editing rows use BAGEL with a remote EditScore judge; the last block is BAGEL text-to-image with an in-process PickScore. Overlapped rows pool the merged implementation, which queues every score, with an earlier prototype that kept at most one score in flight; the bundle reports them separately. $^{\dagger}$Estimated for the injected conditioning of Section~\ref{sec:fidelity-layout} from the measured reward-side times; the rollout count is that of the underlying runs.}
+\caption{Generation plus reward wall-clock time per rollout across three scheduling modes (mean and min--max range over steady-state rollouts). Image-editing rows pair BAGEL with a remote EditScore judge; the bottom block pairs BAGEL text-to-image generation with an in-process PickScore backend. Overlapped rows pool the merged implementation (which queues all completed micro-batches) with an earlier prototype (which kept at most one request in flight); the artifact bundle reports both separately. $^{\dagger}$Estimated for the restored conditioning path of Section~\ref{sec:fidelity-layout} from measured reward-side traces; rollout counts reflect the underlying traced runs.}
 \label{tab:reward-overlap}
 \centering
 \small
 \input{artifacts/reported_results/2026-09-30-reward-service/overlap_table.tex}
 \end{table}
 
-\paragraph{A judge with headroom.}
-With the 8B judge, serial micro-batches reduce generation plus reward from \RSSmallBase{}\,s to \RSSmallSerial{}\,s (\RSSmallSerialSaving{}), and overlapping reduces it to \RSSmallOverlap{}\,s (\RSSmallOverlapSaving{}).
-Generation itself takes about \RSGenEstimate{}\,s in every arm (Figure~\ref{fig:reward-overlap}); the schedules differ in where the reward time falls.
-After a whole shard, the eight requests arrive together and the server scores them one at a time, \RSSmallWholeService{}\,s each, so the last rank waits \RSSmallWholeWaitMax{}\,s for a score that took the judge three.
-With serial micro-batches the ranks collide only once, on their first micro-batch, where the longest wait is \RSSmallSerialFirstWaitMax{}\,s.
-The unequal waits leave the ranks staggered, and each later request finds the judge free and returns in about \RSSmallSerialLaterWait{}\,s.
-With overlap, generation never waits, so the ranks stay in step and collide on every micro-batch; those waits now run beside the next micro-batch's generation, and only the last one remains after generation ends.
-The judge's \RSSmallOverlapWork{}\,s of work per rollout fits in the estimated \RSSmallOverlapWindow{}\,s between the first micro-batch's arrival and the end of generation, and that headroom is what overlap uses.
+\paragraph{Regime 1: Judge with spare capacity.}
+With the 8B EditScore judge, serial micro-batching reduces combined generation and reward time from \RSSmallBase{}\,s to \RSSmallSerial{}\,s (\RSSmallSerialSaving{}), and overlapping generation with scoring further reduces it to \RSSmallOverlap{}\,s (\RSSmallOverlapSaving{}).
+Generation itself requires approximately \RSGenEstimate{}\,s across all three schedules (Figure~\ref{fig:reward-overlap}); the schedules differ in how much reward latency remains exposed after generation completes.
+Under the whole-shard baseline, all eight ranks submit their 32-pair requests simultaneously at the end of generation; the server processes them sequentially at \RSSmallWholeService{}\,s per request, so the last rank waits \RSSmallWholeWaitMax{}\,s for a score that takes the judge \RSSmallWholeService{}\,s to compute.
+Under serial micro-batching, the eight ranks contend simultaneously only on their first micro-batch, where the maximum wait is \RSSmallSerialFirstWaitMax{}\,s.
+Those staggered completion times desynchronize the ranks on subsequent micro-batches, allowing later requests to reach an idle judge and return in a median of \RSSmallSerialLaterWait{}\,s.
+Under overlapped micro-batching, generation proceeds without waiting for reward responses, so the ranks remain synchronized and contend on every micro-batch; however, those queueing delays occur concurrently with the generation of subsequent micro-batches, leaving only the final micro-batch's scoring latency exposed after generation finishes.
+Total judge busy time is \RSSmallOverlapWork{}\,s per rollout, which fits within the estimated \RSSmallOverlapWindow{}\,s window between the arrival of the first micro-batch and the completion of generation.
 
-\paragraph{A saturated judge.}
-With the 72B judge, serial micro-batches reduce generation plus reward from \RSLargeBase{}\,s to \RSLargeSerial{}\,s (\RSLargeSerialSaving{}), and the overlapped schedule is indistinguishable from the serial one: \RSLargeOverlap{}\,s, with a range of \RSLargeOverlapMin{}--\RSLargeOverlapMax{}\,s against \RSLargeSerialMin{}--\RSLargeSerialMax{}\,s.
-In both, the judge works without a gap from the arrival of the first micro-batch, an estimated \RSLargeFirstArrival{}\,s into the rollout, until its last request.
-The rollout therefore ends at that arrival plus the judge's total work, whatever order the requests come in.
-That work was \RSLargeSerialWorkMin{}--\RSLargeSerialWorkMax{}\,s per traced rollout under the serial schedule and \RSLargeOverlapWorkMin{}--\RSLargeOverlapWorkMax{}\,s under the overlapped one, and it drifts by up to three seconds between consecutive rollouts of one arm, so the few seconds between the two rows of Table~\ref{tab:reward-overlap} are not an effect of the schedule.
-Once the judge is busy for the whole rollout, adding judge capacity or making its requests cheaper is the remaining lever.
+\paragraph{Regime 2: Saturated judge.}
+With the 72B EditScore judge, serial micro-batching reduces combined generation and reward time from \RSLargeBase{}\,s to \RSLargeSerial{}\,s (\RSLargeSerialSaving{}), while overlapped micro-batching yields \RSLargeOverlap{}\,s (range \RSLargeOverlapMin{}--\RSLargeOverlapMax{}\,s versus \RSLargeSerialMin{}--\RSLargeSerialMax{}\,s for serial), showing no further improvement.
+In both micro-batched schedules, the 72B judge remains continuously busy from the arrival of the first micro-batch (an estimated \RSLargeFirstArrival{}\,s into the rollout) until the final request completes.
+Consequently, total rollout plus reward time is lower-bounded by the first request's arrival time plus the judge's total service work, regardless of whether subsequent requests are issued serially or overlapped.
+Total judge service work per traced rollout ranged from \RSLargeSerialWorkMin{} to \RSLargeSerialWorkMax{}\,s under the serial schedule and from \RSLargeOverlapWorkMin{} to \RSLargeOverlapWorkMax{}\,s under the overlapped schedule, with rollout-to-rollout variation of up to 3\,s within the same arm; the small difference between the serial and overlapped means in Table~\ref{tab:reward-overlap} is within this run-to-run variation.
+Once the judge is fully utilized throughout the overlap window, further wall-clock reductions require either additional judge replicas or lower per-request scoring cost.
 
-\paragraph{How one gets into that regime.}
-The regime is defined by the ratio of reward cost to generation cost, not by the judge's parameter count, and this deployment reaches it in a way a production one need not.
-A 72B judge scoring for a policy with 7B active parameters is an unusual pairing, and one judge replica serves all eight training ranks.
-Even at the per-pair cost of whole-shard requests that replica would need \RSLargeWholeWork{}\,s per rollout, more than the estimated \RSLargeWindow{}\,s between the first micro-batch's arrival and the end of generation, so it is saturated at this shape whatever the request size.
-The single-scorer server deepens this: it scores one request at a time, so the small requests that arrive concurrently from different ranks are never merged into one forward.
-On the same judge a 32-pair request costs \RSLargeWholePerPair{}\,s per pair and an eight-pair request \RSLargeMicroPerPair{}\,s, so serving a rollout as 32 small requests raises the judge's total work from \RSLargeWholeWork{}\,s to \RSLargeSerialWork{}\,s.
-Giving this judge headroom at this shape takes more than one replica; batching across concurrent requests or splitting prefill from decode reduces how many.
-We report the arm as a stress test of the schedule, not as a shape to plan for.
+\paragraph{Conditions for judge saturation.}
+Whether a deployment enters the saturated regime depends on the ratio of total reward service work to the generation overlap window rather than on model size alone.
+Pairing a 72B judge with a 7B-active-parameter policy and serving all eight training ranks from a single judge replica intentionally stresses the reward bottleneck.
+Even at the lower per-pair cost of whole-shard 32-pair requests, a single 72B judge replica requires \RSLargeWholeWork{}\,s of work per rollout, which exceeds the estimated \RSLargeWindow{}\,s window between the first micro-batch arrival and the end of generation.
+Moreover, the standalone single-scorer server processes one HTTP request at a time without cross-request batching, so concurrent eight-pair requests from different ranks queue serially rather than merging into a larger forward pass.
+On the 72B judge, reducing the request size from 32 pairs to eight increases the per-pair service cost from \RSLargeWholePerPair{}\,s to \RSLargeMicroPerPair{}\,s, raising total judge work per rollout from \RSLargeWholeWork{}\,s to \RSLargeSerialWork{}\,s.
+Operating the 72B judge with headroom at this batch shape would require multiple judge replicas, while cross-request continuous batching or prefill--decode separation would reduce the number of replicas needed.
+We include the single-replica 72B configuration as a boundary stress test of the overlap schedule rather than a recommended production provisioning.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.85\textwidth]{artifacts/reported_results/2026-09-30-reward-service/figures/overlap_wallclock.pdf}
-\caption{Where the rollout's wall-clock goes for the two remote judges of Table~\ref{tab:reward-overlap}, estimated as in the table. Generation is unchanged by the schedule; the schedules differ in how much reward time remains outside it.}
+\caption{Breakdown of rollout wall-clock time for the two remote EditScore judges in Table~\ref{tab:reward-overlap} (estimated as described in the table caption). Generation duration is constant across schedules; the schedules differ in the portion of reward evaluation time exposed outside generation.}
 \label{fig:reward-overlap}
 \end{figure}
 
-\paragraph{The price of small requests.}
-Micro-batching increases the judge's work.
-An eight-pair request costs the 72B judge \RSLargeSerialService{}\,s and a 32-pair request \RSLargeWholeService{}\,s, so a rollout scored in micro-batches needs \RSLargeSerialWork{}\,s of judge time against \RSLargeWholeWork{}\,s for whole shards; for the 8B judge the figures are \RSSmallMicroWork{}\,s and \RSSmallWholeWork{}\,s.
-The schedule wins because that work starts a quarter of the way into generation instead of after it, not because there is less of it.
-Smaller requests without the stack only pay the price: in a shallower shape with 16 rows per rank, splitting the whole-shard request into eight-row requests was slower than the baseline on both judges (\RSSmallShallowBase{}\,s to \RSSmallShallowSplit{}\,s and \RSLargeShallowBase{}\,s to \RSLargeShallowSplit{}\,s, estimated as above).
-Per pair the same judge is \RSLargeMicroPerPair{}\,s against \RSLargeWholePerPair{}\,s, and the 8B judge \RSSmallMicroPerPair{}\,s against \RSSmallWholePerPair{}\,s: the penalty is the serving path, not the schedule.
-The single-scorer server used here scores one request at a time, so requests that arrive together from different ranks wait rather than batch.
-Continuous batching across them, a separate prefill stage, or simply more replicas would remove this cost and leave the schedule's arrival stagger as a pure gain.
+\paragraph{Batch-size overhead of micro-batched requests.}
+Splitting a shard into smaller requests increases total judge compute time when the server does not batch across concurrent requests.
+On the 72B judge, an eight-pair request requires \RSLargeSerialService{}\,s whereas a 32-pair request requires \RSLargeWholeService{}\,s, increasing total judge work per rollout from \RSLargeWholeWork{}\,s (whole shard) to \RSLargeSerialWork{}\,s (micro-batched); on the 8B judge, the corresponding totals are \RSSmallWholeWork{}\,s and \RSSmallMicroWork{}\,s (with per-pair costs of \RSLargeMicroPerPair{}\,s versus \RSLargeWholePerPair{}\,s on 72B and \RSSmallMicroPerPair{}\,s versus \RSSmallWholePerPair{}\,s on 8B).
+Micro-batched scheduling reduces wall-clock time despite this overhead because judge evaluation begins one quarter of the way through generation rather than after all generation completes.
+When requests are split into smaller chunks \emph{without} interleaving them with generation, only the batch-size penalty remains: in an ablation at 16 rows per rank, splitting the post-generation whole-shard call into two eight-row requests increased total time from \RSSmallShallowBase{}\,s to \RSSmallShallowSplit{}\,s on the 8B judge and from \RSLargeShallowBase{}\,s to \RSLargeShallowSplit{}\,s on the 72B judge.
+Adding cross-request continuous batching or additional judge replicas would eliminate the small-batch penalty while preserving the early-start advantage of micro-batching.
 
-\paragraph{An in-process scorer.}
-With PickScore in the policy's workers, reward is a small part of the rollout, and the stack reduces generation plus reward from \RSLocalBase{}\,s to \RSLocalSerial{}\,s.
-Scoring inside the worker took about one second in these runs; the rest of the baseline's reward phase is the driver-dispatched call.
-Overlap has nothing left to hide here.
+\paragraph{In-process scoring baseline.}
+When PickScore runs in-process on the policy workers, reward evaluation accounts for roughly 1\,s of compute per rollout, and \texttt{RewardStack} reduces combined generation and reward time from \RSLocalBase{}\,s to \RSLocalSerial{}\,s primarily by eliminating the separate driver-level dispatch hop.
+Because in-process scoring is already negligible relative to generation, background thread overlap provides no additional reduction (\RSLocalSerial{}\,s versus 52.3\,s).
 
-\paragraph{A side effect on training.}
-The micro-batch loop leaves garbage in the worker's Python heap.
-When the following train phase started without a collection pass, it took \RSTrainRemoteNoCollect{}\,s in the 8B-judge runs and \RSTrainLocalNoCollect{}\,s in the PickScore runs; with a pass at the rollout boundary it took \RSTrainRemoteCollect{}\,s and \RSTrainLocalCollect{}\,s.
-The merged role therefore collects once the shard has left the worker.
-In both workloads the train phase replays against the trainer's own conditioning, so these times are measured rather than estimated.
-The cost of a rollout schedule has to be read off the whole step, not the rollout phase alone.
+\paragraph{Interaction with training-phase memory collection.}
+Executing multiple generation and scoring micro-batches within a single rollout leaves uncollected Python objects and cached allocations in the worker heap.
+When the subsequent training phase began without an explicit garbage-collection and cache-flush pass at the rollout boundary, training step time increased from \RSTrainRemoteCollect{}\,s to \RSTrainRemoteNoCollect{}\,s in the 8B-judge runs and from \RSTrainLocalCollect{}\,s to \RSTrainLocalNoCollect{}\,s in the in-process PickScore runs.
+The merged \texttt{RewardStack} implementation therefore triggers a cleanup pass once the scored shard leaves the worker.
+Because the training phase replays against the trainer's own conditioning in both configurations, these training durations are direct measurements rather than rescaled estimates, illustrating why rollout scheduling changes must be evaluated across the full iteration.
 
-\subsection{Sharing one GPU among small scorers}
+\subsection{GPU Sharing Across Lightweight Scorers via MPS}
 \label{sec:reward-mps}
 
-The standalone service gives every scorer actor whole devices.
-That is simple and isolates faults, but a panel of small preference models leaves most of a large accelerator idle.
-Ray can place several actors on one device through fractional resources; the fraction is scheduling bookkeeping, and the separate CUDA processes it co-locates are time-sliced.
-NVIDIA's Multi-Process Service (MPS) lets kernels from different processes run concurrently~\citep{nvidiamps}, which keeps one process, and one dependency set, per scorer while using the idle capacity between their kernels.
+By default, the standalone reward service allocates whole GPUs to each scorer actor.
+While this provides hardware fault isolation, a panel of lightweight preference models leaves a high-memory accelerator largely underutilized.
+Although Ray supports fractional GPU allocation to colocate multiple actors on a single device, standard CUDA contexts from separate processes are time-sliced by the driver.
+NVIDIA Multi-Process Service (MPS) allows kernels from distinct processes to execute concurrently on the same GPU~\citep{nvidiamps}, preserving per-scorer process and dependency isolation while overlapping their compute kernels.
 
-The open pull request adds this as an opt-in runtime.
-The service either owns the MPS daemon of its node, starting it before any actor creates a CUDA context and stopping it after the last one has exited, or attaches to a daemon owned by the platform.
-Each reward may set an active-thread percentage and a device-memory allocation cap, which are exported to its actor before its first CUDA call.
-The configuration is rejected when it combines sharing with tensor-parallel scorers, with scorers that have not been qualified, or with half-precision weights below a full active-thread share.
-Shutdown stops admission, waits for submitted GPU work, and only then terminates actors and the daemon.
-The cap limits what a client may allocate; it is not memory isolation, and all clients of one device share a fault domain, which the health endpoint reports.
+UniRL pull request~\#492 introduces an opt-in MPS runtime mode for the standalone reward service.
+The service can either manage the node's MPS control daemon directly---starting it before any scorer actor initializes CUDA and stopping it after all actors exit---or attach to an externally managed daemon.
+Each scorer configuration may specify an active-thread percentage and a device-memory allocation cap, which are exported to the actor's environment prior to CUDA initialization.
+Startup validation rejects MPS configurations that combine device sharing with tensor-parallel scorers, unqualified scorer backends, or half-precision weights running below a 100\% active-thread cap.
+During shutdown, the service halts request admission, drains in-flight GPU work, and terminates actors before stopping the MPS daemon.
+Because the MPS memory cap bounds per-client allocations without providing hardware memory protection, all actors sharing a GPU belong to a single fault domain, which is recorded in the service's health metadata.
 
 \begin{table}[H]
-\caption{Throughput gain (\%) of MPS over fractional sharing without MPS for two or three copies of one scorer on a single H20, as reported in pull request \#492; $b$ is the model batch. Dashes mark batch sizes at which the scorer does not run one batched forward of that size.}
+\caption{Throughput gain (\%) of NVIDIA MPS over fractional GPU colocation without MPS for two or three replicas of a single scorer on one NVIDIA H20 GPU, as reported in UniRL pull request~\#492; $B_s$ denotes the scorer batch size. Dashes indicate batch sizes at which the scorer implementation does not execute a single batched forward pass.}
 \label{tab:reward-mps}
 \centering
 \small
 \input{artifacts/reported_results/2026-09-30-reward-service/mps_table.tex}
 \end{table}
 
-\paragraph{Reported results.}
-Table~\ref{tab:reward-mps} transcribes the author's qualification on H20 GPUs; we did not repeat it.
-For panels of different scorers on one device, the pull request reports a median gain of \RSMpsThreeLight{} for three light scorers and \RSMpsTwoLight{} for two, smaller gains when a heavier vision--language scorer bounds the panel, and none for an autoregressive OCR scorer.
-Scores were identical with and without MPS on its deterministic fixture.
-The gain comes from filling idle device time between the kernels of different processes; the pull request's profiles put a single CLIP process at about half of the device's time at batch one.
-It is a utilization result for small models and does not add capacity once one scorer saturates the device.
+\paragraph{Reported qualification results.}
+Table~\ref{tab:reward-mps} summarizes the qualification benchmarks reported in UniRL pull request~\#492 on NVIDIA H20 GPUs (these measurements were not independently rerun for this report).
+For heterogeneous panels colocated on a single H20 GPU, the pull request reports a median throughput gain of \RSMpsThreeLight{} for three lightweight scorers and \RSMpsTwoLight{} for two, smaller gains when a heavier vision--language scorer dominates device time, and no gain for an autoregressive OCR scorer.
+On the deterministic test fixture, output scores were bit-identical with and without MPS enabled.
+Profiling in the pull request indicates that a single CLIP replica at $B_s{=}1$ utilizes roughly half of the device's execution time, allowing MPS to fill the inter-kernel gaps with work from colocated replicas; once a single scorer saturates the GPU, MPS provides no additional throughput.
 
-\paragraph{A correctness boundary.}
-The same qualification found that an active-thread percentage below 100 produced wrong half-precision matrix products on the tested H20 driver stack: non-finite CLIP scores, and finite but incorrect PickScore values.
-The runtime therefore refuses half-precision scorers below a full share.
-A reviewer did not reproduce the failure on a different accelerator and driver, where the same panel was bound by CPU and HTTP work and co-location cost almost nothing even without MPS.
-The benefit and the hazard both depend on the device and driver, and a throughput figure from one stack should not be carried to another.
-Only CLIP and PickScore at a full share are qualified in the pull request; vision--language judges, longer soak runs, and sharing a device between reward and the policy's own roles are outside its scope.
+\paragraph{Numerical correctness boundary.}
+The same qualification identified a numerical defect on the tested H20 driver stack when restricting the MPS active-thread percentage below 100\%: half-precision matrix multiplications produced non-finite outputs in CLIP and finite but numerically incorrect values in PickScore.
+Consequently, the runtime rejects half-precision scorers configured with less than a 100\% active-thread share.
+A separate review on a different GPU model and driver version did not reproduce the numerical corruption and observed negligible colocation overhead even without MPS because the workload was bottlenecked by CPU preprocessing and HTTP serialization.
+Both the throughput benefit and the sub-100\% thread-cap hazard are therefore hardware- and driver-dependent.
+Only CLIP and PickScore at a 100\% active-thread share are marked qualified in UniRL pull request~\#492; vision--language judges, long-horizon stability runs, and sharing GPUs between reward actors and policy workers remain outside its qualified scope.

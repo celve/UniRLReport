@@ -240,7 +240,7 @@ def write_mps_table(mps: list[dict[str, str]]) -> None:
         "\\begin{tabular}{@{}lrrrrrr@{}}\n\\toprule\n",
         " & \\multicolumn{3}{c}{Two copies} & \\multicolumn{3}{c}{Three copies} \\\\\n",
         "\\cmidrule(lr){2-4}\\cmidrule(l){5-7}\n",
-        "Scorer & $b{=}1$ & $b{=}4$ & $b{=}8$ & $b{=}1$ & $b{=}4$ & $b{=}8$ \\\\\n\\midrule\n",
+        "Scorer & $B_s{=}1$ & $B_s{=}4$ & $B_s{=}8$ & $B_s{=}1$ & $B_s{=}4$ & $B_s{=}8$ \\\\\n\\midrule\n",
     ]
     for workload in order:
         row = [cells.get((workload, copies, batch), "--") for copies in ("2", "3") for batch in ("1", "4", "8")]
