@@ -10,7 +10,7 @@
 *.out
 *.toc
 *.pdf
-!artifacts/reported_results/**/figures/*.pdf
+!artifacts/reported_results/**/*.pdf
 *.nav
 *.snm
 *.vrb
