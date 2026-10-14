@@ -34,16 +34,16 @@
 \setlist[itemize]{leftmargin=*,topsep=2pt,itemsep=2pt}
 \setlist[enumerate]{leftmargin=*,topsep=2pt,itemsep=2pt}
 
-\newcommand{\system}{UniRL\xspace}
+\newcommand{\system}{\textsc{UniRL}\xspace}
 \newcommand{\sample}{\texttt{Sample}}
 \newcommand{\parttype}{\texttt{Part}}
-\newcommand{\paperTODO}[1]{}
+\newcommand{\paperTODO}[1]{\textcolor{todored}{\textbf{TODO[data]:} #1}}
 \newcommand{\codepath}[1]{\texttt{#1}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 \input{artifacts/reported_results/2026-09-22/macros.tex}
 
-\title{UniRL: Trajectory-Centric Post-Training\\
+\title{\system: Trajectory-Centric Post-Training\\
 Across Heterogeneous Generative Models}
 
 \author{\name UniRL Authors \email authors@to.be.added \\
